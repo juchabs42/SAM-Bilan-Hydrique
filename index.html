@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#8B1E2D" />
+  <meta name="description" content="SAM Bilan Hydrique — suivi et projection du stock hydrique des parcelles." />
+  <title>SAM Bilan Hydrique</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="sudexpe-mark" aria-label="SudExpé">SudExpé</div>
+      <img class="app-logo" src="icon.svg" alt="" />
+      <div class="brand-copy">
+        <h1>SAM Bilan Hydrique</h1>
+        <span>Sud Agro Météo</span>
+      </div>
+    </div>
+    <button id="authToggle" class="icon-btn" type="button" aria-label="Connexion" title="Connexion">
+      <span aria-hidden="true">●</span>
+    </button>
+  </header>
+
+  <main class="shell">
+    <section id="installCard" class="card install-card hidden">
+      <div>
+        <strong>Installer l'application</strong>
+        <p>Ajoutez SAM Bilan Hydrique à l'écran d'accueil pour un accès direct.</p>
+      </div>
+      <button id="installBtn" class="btn primary" type="button">Installer</button>
+    </section>
+
+    <section id="configWarning" class="card warning hidden">
+      <strong>Configuration Supabase requise.</strong>
+      <p>Renseignez <code>config.js</code>, puis exécutez <code>supabase.sql</code> dans l'éditeur SQL de Supabase.</p>
+    </section>
+
+    <section id="authCard" class="card auth-card hidden">
+      <div id="loggedOutPanel">
+        <h2>Connexion</h2>
+        <div class="form-grid compact">
+          <label>Email<input id="emailInput" type="email" autocomplete="email" /></label>
+          <label>Mot de passe<input id="passwordInput" type="password" autocomplete="current-password" /></label>
+        </div>
+        <div class="actions">
+          <button id="loginBtn" class="btn primary" type="button">Se connecter</button>
+        </div>
+        <p class="muted small">Les comptes sont créés par l'administrateur. Il n'y a pas d'auto-inscription.</p>
+      </div>
+      <div id="loggedInPanel" class="hidden">
+        <div class="row-between">
+          <div><strong id="userEmail"></strong><div class="muted small">Connecté</div></div>
+          <button id="logoutBtn" class="btn secondary" type="button">Se déconnecter</button>
+        </div>
+      </div>
+      <p id="authMessage" class="form-message"></p>
+    </section>
+
+    <section id="appArea" class="hidden">
+      <section class="toolbar card">
+        <div class="parcel-select-wrap">
+          <label for="parcelSelect">Parcelle</label>
+          <select id="parcelSelect"></select>
+        </div>
+        <button id="newParcelBtn" class="btn primary" type="button">+ Nouvelle parcelle</button>
+      </section>
+
+      <nav class="tabs" aria-label="Navigation principale">
+        <button class="tab active" data-tab="dashboard" type="button">Bilan</button>
+        <button class="tab" data-tab="irrigation" type="button">Irrigations</button>
+        <button class="tab" data-tab="parcel" type="button">Parcelle</button>
+      </nav>
+
+      <section id="tab-dashboard" class="tab-panel active">
+        <div id="noParcelDashboard" class="card empty-state hidden">
+          <h2>Créer une parcelle</h2>
+          <p>Commencez par renseigner le sol, la profondeur d'enracinement et la localisation.</p>
+          <button class="btn primary" type="button" data-open-parcel>Créer ma première parcelle</button>
+        </div>
+
+        <div id="dashboardContent" class="hidden">
+          <div class="kpi-grid">
+            <article class="kpi"><span>Stock actuel</span><strong id="kpiStock">—</strong><small id="kpiStockSub">—</small></article>
+            <article class="kpi"><span>Stock</span><strong id="kpiPercent">—</strong><small>de la RU</small></article>
+            <article class="kpi"><span>Marge avant RFU</span><strong id="kpiMargin">—</strong><small id="kpiRfuSub">—</small></article>
+            <article class="kpi"><span>Besoin aujourd'hui</span><strong id="kpiNeed">—</strong><small>ET₀ × Kc</small></article>
+          </div>
+
+          <section id="adviceCard" class="card advice hidden">
+            <h2>Conseil d'irrigation</h2>
+            <p id="adviceText"></p>
+          </section>
+
+          <section class="card chart-card">
+            <div class="row-between wrap gap">
+              <div>
+                <h2>Bilan hydrique</h2>
+                <p id="chartSubtitle" class="muted small"></p>
+              </div>
+              <div class="inline-controls">
+                <label>Période
+                  <select id="periodSelect">
+                    <option value="14">14 jours + 7 j</option>
+                    <option value="30" selected>30 jours + 7 j</option>
+                    <option value="60">60 jours + 7 j</option>
+                    <option value="season">Saison + 7 j</option>
+                  </select>
+                </label>
+                <button id="refreshBtn" class="btn secondary" type="button">Actualiser</button>
+              </div>
+            </div>
+            <div class="chart-wrap"><canvas id="waterChart"></canvas></div>
+            <div class="legend-note">
+              <span><i class="dot observed"></i> Stock observé</span>
+              <span><i class="dot forecast"></i> Stock prévisionnel</span>
+              <span>Pluie et irrigation en barres</span>
+            </div>
+          </section>
+
+          <section class="summary-grid">
+            <article class="card compact-card"><span>RU</span><strong id="summaryRu">—</strong></article>
+            <article class="card compact-card"><span>RFU / seuil</span><strong id="summaryRfu">—</strong></article>
+            <article class="card compact-card"><span>Drainage sur la période</span><strong id="summaryDrainage">—</strong></article>
+            <article class="card compact-card"><span>Kc aujourd'hui</span><strong id="summaryKc">—</strong></article>
+          </section>
+
+          <section class="card">
+            <div class="row-between wrap gap">
+              <div>
+                <h2>Corriger une pluie</h2>
+                <p class="muted small">La valeur saisie remplace complètement la pluie Open‑Meteo pour la date choisie.</p>
+              </div>
+            </div>
+            <div class="form-grid">
+              <label>Date<input id="rainCorrectionDate" type="date" /></label>
+              <label>Pluie mesurée (mm)<input id="rainCorrectionAmount" type="number" min="0" step="0.1" inputmode="decimal" /></label>
+            </div>
+            <div id="rainOriginalInfo" class="muted small">Choisissez une date pour afficher la valeur Open‑Meteo.</div>
+            <div class="actions">
+              <button id="saveRainCorrectionBtn" class="btn primary" type="button">Enregistrer le remplacement</button>
+              <button id="deleteRainCorrectionBtn" class="btn secondary" type="button">Utiliser Open‑Meteo</button>
+            </div>
+            <p id="rainCorrectionMessage" class="form-message"></p>
+          </section>
+
+          <section class="card export-card">
+            <div>
+              <h2>Exporter les données</h2>
+              <p class="muted small">L'export contient date, ET₀, Kc, ETc, pluie Open‑Meteo, pluie utilisée, irrigation, stock et drainage.</p>
+            </div>
+            <div class="actions">
+              <button id="exportCsvBtn" class="btn secondary" type="button">CSV</button>
+              <button id="exportXlsxBtn" class="btn secondary" type="button">Excel</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-irrigation" class="tab-panel">
+        <div id="noParcelIrrigation" class="card empty-state hidden">Créez d'abord une parcelle.</div>
+        <div id="irrigationContent" class="hidden">
+          <section class="card">
+            <h2>Ajouter une irrigation</h2>
+            <div class="form-grid">
+              <label>Date<input id="irrigationDate" type="date" /></label>
+              <label>Quantité réellement délivrée (mm)<input id="irrigationAmount" type="number" min="0" step="0.1" inputmode="decimal" /><small id="irrigationConversion" class="muted">—</small></label>
+              <label class="check-label"><input id="repeatIrrigation" type="checkbox" /> Répéter cette irrigation</label>
+            </div>
+            <div id="repeatOptions" class="repeat-box hidden">
+              <div class="form-grid">
+                <label>Fréquence
+                  <select id="repeatInterval">
+                    <option value="1">Tous les jours</option>
+                    <option value="2">Tous les 2 jours</option>
+                    <option value="3">Tous les 3 jours</option>
+                    <option value="7">Toutes les semaines</option>
+                  </select>
+                </label>
+                <label>Date de fin<input id="repeatEndDate" type="date" /></label>
+              </div>
+              <p class="muted small">La répétition est limitée à aujourd'hui dans cette version.</p>
+            </div>
+            <div class="actions"><button id="saveIrrigationBtn" class="btn primary" type="button">Enregistrer</button></div>
+            <p id="irrigationMessage" class="form-message"></p>
+          </section>
+
+          <section class="card">
+            <h2>Historique des irrigations</h2>
+            <div id="irrigationList" class="item-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="tab-parcel" class="tab-panel">
+        <section class="card">
+          <div class="row-between wrap gap">
+            <div><h2 id="parcelFormTitle">Nouvelle parcelle</h2><p class="muted small">Le bilan démarre le 1er mars avec une RU considérée pleine.</p></div>
+            <button id="deleteParcelBtn" class="btn danger hidden" type="button">Supprimer</button>
+          </div>
+
+          <div class="section-title">Identification</div>
+          <div class="form-grid">
+            <label>Nom de la parcelle<input id="parcelName" type="text" maxlength="80" /></label>
+            <label>Surface (ha)<input id="parcelArea" type="number" min="0.01" step="0.01" inputmode="decimal" /></label>
+          </div>
+
+          <div class="section-title">Localisation</div>
+          <div class="location-actions">
+            <div class="search-wrap">
+              <input id="locationSearch" type="search" placeholder="Chercher un lieu en France" />
+              <button id="searchLocationBtn" class="btn secondary" type="button">Rechercher</button>
+            </div>
+            <button id="geolocateBtn" class="btn secondary" type="button">Trouver ma position</button>
+          </div>
+          <div id="locationResults" class="location-results"></div>
+          <div class="location-selected">Position : <strong id="selectedLocation">Non définie</strong></div>
+
+          <div class="section-title">Sol</div>
+          <div class="form-grid three">
+            <label>Argile (%)<input id="clayPct" type="number" min="0" max="100" step="0.1" inputmode="decimal" /></label>
+            <label>Limon (%)<input id="siltPct" type="number" min="0" max="100" step="0.1" inputmode="decimal" /></label>
+            <label>Sable (%)<input id="sandPct" type="number" min="0" max="100" step="0.1" inputmode="decimal" /></label>
+          </div>
+          <div class="soil-result">
+            <div><span>Classe</span><strong id="soilClassResult">—</strong></div>
+            <div><span>RUM</span><strong id="rumResult">—</strong></div>
+          </div>
+          <div class="form-grid">
+            <label>Profondeur d'enracinement (cm)<input id="rootDepth" type="number" min="1" max="300" step="1" inputmode="numeric" /></label>
+          </div>
+          <div class="soil-result three">
+            <div><span>RU</span><strong id="ruResult">—</strong></div>
+            <div><span>RFU (FAO)</span><strong id="rfuResult">—</strong></div>
+            <div><span>Seuil d'alerte</span><strong id="thresholdResult">—</strong></div>
+          </div>
+
+          <div class="section-title">Culture — Pommier</div>
+          <label class="check-label"><input id="groundCover" type="checkbox" /> Couvert végétal actif</label>
+          <label class="check-label"><input id="customKc" type="checkbox" /> Personnaliser les Kc</label>
+          <div id="kcFields" class="form-grid three hidden">
+            <label>Kc initial<input id="kcInitial" type="number" min="0" max="2" step="0.01" /></label>
+            <label>Kc mi-saison<input id="kcMid" type="number" min="0" max="2" step="0.01" /></label>
+            <label>Kc fin<input id="kcEnd" type="number" min="0" max="2" step="0.01" /></label>
+          </div>
+          <div class="kc-calendar">
+            <strong>Calendrier Kc</strong>
+            <p>01/03–30/04 : initial · 01/05–31/05 : transition · 01/06–10/08 : mi-saison · 11/08–30/09 : transition · 01/10–31/10 : fin.</p>
+          </div>
+
+          <div class="notice">
+            <strong>Création en cours de saison</strong>
+            <p>Pour un bilan fiable, renseignez les irrigations réalisées depuis le 1er mars. Les pluies et l'ET₀ sont récupérées automatiquement.</p>
+          </div>
+
+          <div class="actions"><button id="saveParcelBtn" class="btn primary" type="button">Enregistrer la parcelle</button></div>
+          <p id="parcelMessage" class="form-message"></p>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <div id="modalBackdrop" class="modal-backdrop hidden">
+    <div class="modal card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <h2 id="modalTitle">Modifier l'irrigation</h2>
+      <label>Quantité (mm)<input id="editIrrigationAmount" type="number" min="0" step="0.1" /></label>
+      <div id="editSeriesOptions" class="radio-list hidden">
+        <label><input type="radio" name="seriesScope" value="one" checked /> Seulement cette irrigation</label>
+        <label><input type="radio" name="seriesScope" value="following" /> Celle-ci et les suivantes</label>
+        <label><input type="radio" name="seriesScope" value="all" /> Toute la série</label>
+      </div>
+      <div class="actions">
+        <button id="cancelModalBtn" class="btn secondary" type="button">Annuler</button>
+        <button id="saveEditIrrigationBtn" class="btn primary" type="button">Enregistrer</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
