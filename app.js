@@ -35,7 +35,10 @@ const state = {
   chart: null,
   selectedLocation: null,
   editingIrrigation: null,
-  deferredInstallPrompt: null
+  deferredInstallPrompt: null,
+  selectedSeasonYear: null,
+  loadedWeatherSeasonYear: null,
+  selectedIrrigationIds: new Set()
 };
 
 const $ = (id) => document.getElementById(id);
@@ -107,9 +110,20 @@ function isSupabaseConfigured() {
   return cfg.supabaseUrl && cfg.supabaseAnonKey && !cfg.supabaseUrl.includes('VOTRE-PROJET') && !cfg.supabaseAnonKey.includes('VOTRE_CLE');
 }
 
-function getSeasonStart(date = localToday()) {
-  const year = date.getMonth() >= 2 ? date.getFullYear() : date.getFullYear() - 1;
-  return new Date(year, 2, 1, 12);
+function getCurrentSeasonYear(date = localToday()) {
+  return date.getMonth() >= 2 ? date.getFullYear() : date.getFullYear() - 1;
+}
+
+function getSeasonStart(year = getCurrentSeasonYear()) {
+  return new Date(Number(year), 2, 1, 12);
+}
+
+function getSeasonEnd(year = getCurrentSeasonYear()) {
+  return new Date(Number(year), 9, 31, 12);
+}
+
+function isCurrentSeasonYear(year) {
+  return Number(year) === getCurrentSeasonYear();
 }
 
 function standardKcForCover(covered) {
@@ -184,6 +198,11 @@ function bindEvents() {
   qsa('[data-open-parcel]').forEach(btn => btn.addEventListener('click', () => openNewParcel()));
   $('newParcelBtn').addEventListener('click', openNewParcel);
   $('parcelSelect').addEventListener('change', () => activateParcel($('parcelSelect').value));
+  $('seasonSelect').addEventListener('change', async () => {
+    state.selectedSeasonYear = Number($('seasonSelect').value || getCurrentSeasonYear());
+    state.loadedWeatherSeasonYear = null;
+    await refreshBalance(true);
+  });
 
   $('searchLocationBtn').addEventListener('click', searchLocation);
   $('locationSearch').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); searchLocation(); } });
@@ -201,6 +220,8 @@ function bindEvents() {
   $('repeatIrrigation').addEventListener('change', () => $('repeatOptions').classList.toggle('hidden', !$('repeatIrrigation').checked));
   $('irrigationAmount').addEventListener('input', updateIrrigationConversion);
   $('saveIrrigationBtn').addEventListener('click', saveIrrigation);
+  $('selectAllIrrigation').addEventListener('change', toggleAllIrrigations);
+  $('deleteSelectedIrrigationBtn').addEventListener('click', deleteSelectedIrrigations);
 
   $('cancelModalBtn').addEventListener('click', closeIrrigationModal);
   $('modalBackdrop').addEventListener('click', e => { if (e.target === $('modalBackdrop')) closeIrrigationModal(); });
@@ -291,7 +312,9 @@ async function loadParcels() {
     return;
   }
   state.parcels = data || [];
+  if (!state.selectedSeasonYear) state.selectedSeasonYear = getCurrentSeasonYear();
   renderParcelSelector();
+  populateSeasonOptions();
 
   const stored = localStorage.getItem('samBilanActiveParcel');
   const target = state.parcels.find(p => p.id === stored) || state.parcels[0] || null;
@@ -319,8 +342,29 @@ function renderParcelSelector() {
   });
 }
 
+function populateSeasonOptions() {
+  const select = $('seasonSelect');
+  const currentYear = getCurrentSeasonYear();
+  const years = [];
+  for (let year = currentYear; year >= currentYear - 5; year -= 1) years.push(year);
+  if (!state.selectedSeasonYear) state.selectedSeasonYear = currentYear;
+  if (!years.includes(Number(state.selectedSeasonYear))) years.unshift(Number(state.selectedSeasonYear));
+  const seen = new Set();
+  select.innerHTML = years.filter(y => {
+    if (seen.has(y)) return false;
+    seen.add(y);
+    return true;
+  }).map(year => {
+    const selected = Number(year) === Number(state.selectedSeasonYear) ? ' selected' : '';
+    return '<option value="' + year + '"' + selected + '>Saison ' + year + '</option>';
+  }).join('');
+}
+
 function showNoParcel() {
   state.activeParcel = null;
+  state.selectedSeasonYear = getCurrentSeasonYear();
+  state.loadedWeatherSeasonYear = null;
+  populateSeasonOptions();
   $('noParcelDashboard').classList.remove('hidden');
   $('dashboardContent').classList.add('hidden');
   $('noParcelIrrigation').classList.remove('hidden');
@@ -334,6 +378,10 @@ async function activateParcel(id) {
   state.activeParcel = parcel;
   state.weather = [];
   state.balance = [];
+  state.selectedIrrigationIds = new Set();
+  state.loadedWeatherSeasonYear = null;
+  if (!state.selectedSeasonYear) state.selectedSeasonYear = getCurrentSeasonYear();
+  populateSeasonOptions();
   localStorage.setItem('samBilanActiveParcel', id);
   $('parcelSelect').value = id;
   $('noParcelDashboard').classList.add('hidden');
@@ -344,7 +392,7 @@ async function activateParcel(id) {
   await Promise.all([loadIrrigations(), loadRainCorrections()]);
   renderIrrigationList();
   updateIrrigationConversion();
-  await refreshBalance();
+  await refreshBalance(true);
 }
 
 function openNewParcel() {
@@ -570,9 +618,8 @@ function updateIrrigationConversion() {
   const amount = Number($('irrigationAmount').value);
   const area = Number(state.activeParcel?.area_ha || 0);
   if (!(amount >= 0) || !area) return $('irrigationConversion').textContent = '—';
-  const m3ha = amount * 10;
-  const m3parcel = m3ha * area;
-  $('irrigationConversion').textContent = `${num(m3ha,1)} m³/ha · ${num(m3parcel,1)} m³ sur la parcelle`;
+  const m3parcel = amount * 10 * area;
+  $('irrigationConversion').textContent = `${num(m3parcel,1)} m³ sur la parcelle`;
 }
 
 async function saveIrrigation() {
@@ -621,6 +668,9 @@ async function saveIrrigation() {
 function renderIrrigationList() {
   const list = $('irrigationList');
   if (!state.irrigations.length) {
+    $('selectAllIrrigation').checked = false;
+    $('deleteSelectedIrrigationBtn').disabled = true;
+    $('selectedIrrigationCount').classList.add('hidden');
     list.innerHTML = '<div class="muted">Aucune irrigation enregistrée.</div>';
     return;
   }
@@ -628,13 +678,27 @@ function renderIrrigationList() {
   list.innerHTML = state.irrigations.map(item => {
     const amount = Number(item.amount_mm);
     const volume = amount * 10 * area;
+    const checked = state.selectedIrrigationIds.has(item.id) ? ' checked' : '';
     return `<div class="list-item">
-      <div><strong>${fmtDate(item.irrigation_date)} — ${num(amount,1)} mm</strong><div class="meta">${num(amount * 10,1)} m³/ha · ${num(volume,1)} m³ parcelle${item.series_id ? ' · irrigation répétée' : ''}</div></div>
+      <div class="list-item-main">
+        <label class="check-inline"><input type="checkbox" data-select-irrigation="${item.id}"${checked} /><span></span></label>
+        <div>
+          <strong>${fmtDate(item.irrigation_date)} — ${num(amount,1)} mm</strong>
+          <div class="meta">${num(volume,1)} m³ sur la parcelle${item.series_id ? ' · irrigation répétée' : ''}</div>
+        </div>
+      </div>
       <div class="list-actions"><button type="button" data-edit-irrigation="${item.id}">Modifier</button><button type="button" data-delete-irrigation="${item.id}">Supprimer</button></div>
     </div>`;
   }).join('');
+
   qsa('[data-edit-irrigation]').forEach(btn => btn.addEventListener('click', () => openIrrigationModal(btn.dataset.editIrrigation)));
   qsa('[data-delete-irrigation]').forEach(btn => btn.addEventListener('click', () => deleteIrrigation(btn.dataset.deleteIrrigation)));
+  qsa('[data-select-irrigation]').forEach(box => box.addEventListener('change', () => {
+    if (box.checked) state.selectedIrrigationIds.add(box.dataset.selectIrrigation);
+    else state.selectedIrrigationIds.delete(box.dataset.selectIrrigation);
+    syncIrrigationSelectionUi();
+  }));
+  syncIrrigationSelectionUi();
 }
 
 function openIrrigationModal(id) {
@@ -683,6 +747,40 @@ async function deleteIrrigation(id) {
   await refreshBalance();
 }
 
+function syncIrrigationSelectionUi() {
+  const total = state.irrigations.length;
+  const selected = state.selectedIrrigationIds.size;
+  $('selectAllIrrigation').checked = total > 0 && selected === total;
+  $('deleteSelectedIrrigationBtn').disabled = selected === 0;
+  const helper = $('selectedIrrigationCount');
+  if (selected === 0) {
+    helper.classList.add('hidden');
+    helper.textContent = '';
+  } else {
+    helper.classList.remove('hidden');
+    helper.textContent = `${selected} irrigation${selected > 1 ? 's' : ''} sélectionnée${selected > 1 ? 's' : ''}.`;
+  }
+}
+
+function toggleAllIrrigations() {
+  state.selectedIrrigationIds = $('selectAllIrrigation').checked
+    ? new Set(state.irrigations.map(item => item.id))
+    : new Set();
+  renderIrrigationList();
+}
+
+async function deleteSelectedIrrigations() {
+  const ids = [...state.selectedIrrigationIds];
+  if (!ids.length) return;
+  if (!confirm(`Supprimer ${ids.length} irrigation${ids.length > 1 ? 's' : ''} sélectionnée${ids.length > 1 ? 's' : ''} ?`)) return;
+  const { error } = await state.supabase.from('irrigations').delete().in('id', ids);
+  if (error) return toast(error.message);
+  state.selectedIrrigationIds = new Set();
+  await loadIrrigations();
+  renderIrrigationList();
+  await refreshBalance();
+}
+
 async function fetchJson(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Erreur HTTP ${response.status}`);
@@ -692,26 +790,39 @@ async function fetchJson(url) {
 }
 
 async function fetchWeather(parcel) {
+  const selectedYear = Number(state.selectedSeasonYear || getCurrentSeasonYear());
   const today = localToday();
   const todayIso = toISO(today);
-  const seasonStartIso = toISO(getSeasonStart(today));
-  const archiveEnd = addDays(today, -8);
-  const archiveEndIso = toISO(archiveEnd);
+  const seasonStartIso = toISO(getSeasonStart(selectedYear));
+  const seasonEndIso = toISO(getSeasonEnd(selectedYear));
   const weatherMap = new Map();
   const commonDaily = 'precipitation_sum,et0_fao_evapotranspiration';
 
-  if (seasonStartIso <= archiveEndIso) {
-    const archiveUrl = `https://archive-api.open-meteo.com/v1/archive?latitude=${parcel.latitude}&longitude=${parcel.longitude}&start_date=${seasonStartIso}&end_date=${archiveEndIso}&daily=${commonDaily}&timezone=auto`;
-    const archive = await fetchJson(archiveUrl);
-    ingestDailyWeather(weatherMap, archive.daily, todayIso);
+  if (isCurrentSeasonYear(selectedYear)) {
+    const archiveEnd = addDays(today, -8);
+    const archiveEndIso = toISO(archiveEnd);
+    if (seasonStartIso <= archiveEndIso) {
+      const archiveUrl = `https://archive-api.open-meteo.com/v1/archive?latitude=${parcel.latitude}&longitude=${parcel.longitude}&start_date=${seasonStartIso}&end_date=${archiveEndIso}&daily=${commonDaily}&timezone=auto`;
+      const archive = await fetchJson(archiveUrl);
+      ingestDailyWeather(weatherMap, archive.daily, todayIso);
+    }
+
+    const forecastUrl = `https://api.open-meteo.com/v1/forecast?latitude=${parcel.latitude}&longitude=${parcel.longitude}&daily=${commonDaily}&timezone=auto&past_days=7&forecast_days=8`;
+    const forecast = await fetchJson(forecastUrl);
+    ingestDailyWeather(weatherMap, forecast.daily, todayIso);
+
+    return [...weatherMap.values()]
+      .filter(row => row.date >= seasonStartIso)
+      .sort((a, b) => a.date.localeCompare(b.date));
   }
 
-  const forecastUrl = `https://api.open-meteo.com/v1/forecast?latitude=${parcel.latitude}&longitude=${parcel.longitude}&daily=${commonDaily}&timezone=auto&past_days=7&forecast_days=8`;
-  const forecast = await fetchJson(forecastUrl);
-  ingestDailyWeather(weatherMap, forecast.daily, todayIso);
+  const archiveUrl = `https://archive-api.open-meteo.com/v1/archive?latitude=${parcel.latitude}&longitude=${parcel.longitude}&start_date=${seasonStartIso}&end_date=${seasonEndIso}&daily=${commonDaily}&timezone=auto`;
+  const archive = await fetchJson(archiveUrl);
+  ingestDailyWeather(weatherMap, archive.daily, '9999-12-31');
 
   return [...weatherMap.values()]
-    .filter(row => row.date >= seasonStartIso)
+    .filter(row => row.date >= seasonStartIso && row.date <= seasonEndIso)
+    .map(row => ({ ...row, forecast: false }))
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -780,7 +891,10 @@ async function refreshBalance(force = false) {
   $('refreshBtn').disabled = true;
   $('refreshBtn').textContent = 'Actualisation…';
   try {
-    if (force || !state.weather.length) state.weather = await fetchWeather(state.activeParcel);
+    if (force || !state.weather.length || Number(state.loadedWeatherSeasonYear) !== Number(state.selectedSeasonYear)) {
+      state.weather = await fetchWeather(state.activeParcel);
+      state.loadedWeatherSeasonYear = Number(state.selectedSeasonYear);
+    }
     state.balance = computeBalance(state.weather, state.activeParcel);
     renderDashboard();
     updateRainCorrectionInfo();
@@ -793,6 +907,8 @@ async function refreshBalance(force = false) {
 }
 
 function currentBalanceRow() {
+  if (!state.balance.length) return null;
+  if (!isCurrentSeasonYear(state.selectedSeasonYear)) return state.balance[state.balance.length - 1] || null;
   const today = toISO(localToday());
   return state.balance.find(r => r.date === today) || [...state.balance].reverse().find(r => r.date <= today) || null;
 }
@@ -819,18 +935,19 @@ function renderDashboard() {
 
   const shown = getDisplayedBalance();
   $('summaryDrainage').textContent = `${num(shown.reduce((s, r) => s + r.drainage, 0),1)} mm`;
-  $('chartSubtitle').textContent = `${p.name} · ${p.location_name} · RU ${num(ru,1)} mm · RFU ${num(rfu,1)} mm`;
+  $('chartSubtitle').textContent = `${p.name} · ${p.location_name} · Saison ${state.selectedSeasonYear} · RU ${num(ru,1)} mm · RFU ${num(rfu,1)} mm`;
   renderAdvice(current);
   renderChart(shown);
 }
 
 function getDisplayedBalance() {
   const period = $('periodSelect').value;
-  const today = toISO(localToday());
-  const futureEnd = toISO(addDays(localToday(), 7));
-  if (period === 'season') return state.balance.filter(r => r.date <= futureEnd);
-  const start = toISO(addDays(localToday(), -Number(period) + 1));
-  return state.balance.filter(r => r.date >= start && r.date <= futureEnd);
+  const isCurrent = isCurrentSeasonYear(state.selectedSeasonYear);
+  const endDate = isCurrent ? toISO(addDays(localToday(), 7)) : toISO(getSeasonEnd(state.selectedSeasonYear));
+  if (period === 'season') return state.balance.filter(r => r.date <= endDate);
+  const baseDate = isCurrent ? localToday() : getSeasonEnd(state.selectedSeasonYear);
+  const start = toISO(addDays(baseDate, -Number(period) + 1));
+  return state.balance.filter(r => r.date >= start && r.date <= endDate);
 }
 
 function renderAdvice(current) {
@@ -843,22 +960,25 @@ function renderAdvice(current) {
   }
   card.classList.remove('hidden');
   const today = toISO(localToday());
-  const future = state.balance.filter(r => r.date > today).slice(0, 2);
+  const future = isCurrentSeasonYear(state.selectedSeasonYear)
+    ? state.balance.filter(r => r.date > today).slice(0, 2)
+    : [];
   const rain48 = future.reduce((s, r) => s + r.rainUsed, 0);
   const targetRow = future[future.length - 1] || current;
-  const recommended = Math.max(0, Number(p.ru_mm) - targetRow.stock);
+  const recommended = Math.max(0, Number(p.rfu_mm) - targetRow.stock);
   const volume = recommended * 10 * Number(p.area_ha);
 
   if (recommended <= 0.1) {
-    $('adviceText').textContent = `Le stock est sous le seuil RFU, mais ${num(rain48,1)} mm de pluie sont intégrés dans les prochaines 48 h et devraient recharger la réserve jusqu’à la RU. Pas d’irrigation conseillée pour le moment.`;
+    $('adviceText').textContent = `Le stock est sous le seuil RFU, mais ${num(rain48,1)} mm de pluie sont intégrés dans les prochaines 48 h et devraient permettre de revenir au niveau RFU. Pas d'irrigation à prévoir pour le moment.`;
   } else {
-    $('adviceText').textContent = `Le stock est sous le seuil RFU. Après prise en compte de ${num(rain48,1)} mm de pluie prévus dans les prochaines 48 h, il manquerait environ ${num(recommended,1)} mm pour revenir à la RU, soit ${num(recommended * 10,0)} m³/ha et ${num(volume,0)} m³ sur cette parcelle.`;
+    $('adviceText').textContent = `Le stock est sous le seuil RFU. Après prise en compte de ${num(rain48,1)} mm de pluie prévus dans les prochaines 48 h, il manquerait environ ${num(recommended,1)} mm pour revenir au niveau RFU, soit ${num(volume,0)} m³ sur cette parcelle.`;
   }
 }
 
 const todayLinePlugin = {
   id: 'todayLine',
   afterDraw(chart) {
+    if (!isCurrentSeasonYear(state.selectedSeasonYear)) return;
     const labels = chart.data.labels || [];
     const todayLabel = fmtShort(toISO(localToday()));
     const idx = labels.indexOf(todayLabel);
@@ -870,7 +990,7 @@ const todayLinePlugin = {
     ctx.save();
     ctx.beginPath();
     ctx.setLineDash([5, 5]);
-    ctx.strokeStyle = '#8B1E2D';
+    ctx.strokeStyle = '#d7002f';
     ctx.lineWidth = 1.3;
     ctx.moveTo(point.x, chartArea.top);
     ctx.lineTo(point.x, chartArea.bottom);
@@ -886,16 +1006,17 @@ function renderChart(rows) {
   const forecast = rows.map((r, i) => (r.forecast || (firstForecast > 0 && i === firstForecast - 1)) ? r.stock : null);
   const ru = Number(state.activeParcel.ru_mm);
   const rfu = Number(state.activeParcel.rfu_mm);
+  const maxFlux = Math.max(5, ...rows.map(r => Math.max(r.rainUsed || 0, r.irrigation || 0)));
 
   const data = {
     labels,
     datasets: [
       { type: 'line', label: 'Stock observé', data: observed, yAxisID: 'yStock', borderColor: '#2b3137', backgroundColor: '#2b3137', borderWidth: 3, pointRadius: 1.5, tension: .25, spanGaps: false },
-      { type: 'line', label: 'Stock prévisionnel', data: forecast, yAxisID: 'yStock', borderColor: '#6e747b', backgroundColor: '#6e747b', borderWidth: 3, borderDash: [7,5], pointRadius: 1.5, tension: .25, spanGaps: true },
-      { type: 'line', label: 'RU', data: rows.map(() => ru), yAxisID: 'yStock', borderColor: '#4f8a5b', borderWidth: 1.5, borderDash: [4,4], pointRadius: 0 },
-      { type: 'line', label: 'RFU', data: rows.map(() => rfu), yAxisID: 'yStock', borderColor: '#b23b4b', borderWidth: 1.8, borderDash: [6,4], pointRadius: 0 },
-      { type: 'bar', label: 'Pluie', data: rows.map(r => r.rainUsed), yAxisID: 'yFlux', backgroundColor: 'rgba(54, 125, 185, .35)', borderWidth: 0 },
-      { type: 'bar', label: 'Irrigation', data: rows.map(r => r.irrigation), yAxisID: 'yFlux', backgroundColor: 'rgba(42, 151, 120, .45)', borderWidth: 0 }
+      { type: 'line', label: 'Stock prévisionnel', data: forecast, yAxisID: 'yStock', borderColor: '#7a8088', backgroundColor: '#7a8088', borderWidth: 3, borderDash: [7,5], pointRadius: 1.5, tension: .25, spanGaps: true },
+      { type: 'line', label: 'RU', data: rows.map(() => ru), yAxisID: 'yStock', borderColor: '#1f6f43', borderWidth: 2, borderDash: [], pointRadius: 0 },
+      { type: 'line', label: 'RFU', data: rows.map(() => rfu), yAxisID: 'yStock', borderColor: '#b24a00', borderWidth: 2, borderDash: [], pointRadius: 0 },
+      { type: 'bar', label: 'Pluie', data: rows.map(r => r.rainUsed), yAxisID: 'yFlux', backgroundColor: 'rgba(0, 88, 183, .88)', borderWidth: 0, order: 0 },
+      { type: 'bar', label: 'Irrigation', data: rows.map(r => r.irrigation), yAxisID: 'yFlux', backgroundColor: 'rgba(0, 166, 81, .92)', borderWidth: 0, order: 0 }
     ]
   };
 
@@ -908,7 +1029,7 @@ function renderChart(rows) {
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } },
+        legend: { position: 'bottom', labels: { usePointStyle: false, boxWidth: 28, boxHeight: 3 } },
         tooltip: {
           callbacks: {
             afterBody(items) {
@@ -923,7 +1044,7 @@ function renderChart(rows) {
       scales: {
         x: { stacked: false, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: window.innerWidth < 700 ? 8 : 16 }, grid: { display: false } },
         yStock: { position: 'left', min: 0, suggestedMax: ru * 1.08, title: { display: true, text: 'Stock (mm)' } },
-        yFlux: { position: 'right', beginAtZero: true, title: { display: true, text: 'Pluie / irrigation (mm)' }, grid: { drawOnChartArea: false } }
+        yFlux: { position: 'right', reverse: true, min: 0, max: maxFlux * 1.15, title: { display: true, text: 'Pluie / irrigation (mm)' }, grid: { drawOnChartArea: false } }
       }
     }
   };
@@ -992,7 +1113,6 @@ function exportRows() {
     'Pluie utilisée (mm)': round(r.rainUsed, 2),
     'Pluie corrigée': r.rainCorrected ? 'Oui' : 'Non',
     'Irrigation (mm)': round(r.irrigation, 2),
-    'Irrigation (m3/ha)': round(r.irrigation * 10, 1),
     'Irrigation parcelle (m3)': round(r.irrigation * 10 * Number(state.activeParcel.area_ha), 1),
     'Stock eau (mm)': round(r.stock, 2),
     'Drainage/perte (mm)': round(r.drainage, 2),
@@ -1033,7 +1153,7 @@ function exportXlsx() {
   if (!state.activeParcel || !state.balance.length) return;
   if (!window.XLSX) return toast('Le module Excel n’a pas pu être chargé.');
   const ws = XLSX.utils.json_to_sheet(exportRows());
-  ws['!cols'] = [{wch:12},{wch:12},{wch:11},{wch:8},{wch:18},{wch:22},{wch:19},{wch:15},{wch:16},{wch:20},{wch:24},{wch:18},{wch:20},{wch:12}];
+  ws['!cols'] = [{wch:12},{wch:12},{wch:11},{wch:8},{wch:18},{wch:22},{wch:19},{wch:15},{wch:16},{wch:24},{wch:18},{wch:20},{wch:12}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Bilan hydrique');
   XLSX.writeFile(wb, `SAM_Bilan_${safeFilename(state.activeParcel.name)}.xlsx`);

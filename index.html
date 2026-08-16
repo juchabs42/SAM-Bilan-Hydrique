@@ -3,25 +3,26 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#8B1E2D" />
+  <meta name="theme-color" content="#d7002f" />
   <meta name="description" content="SAM Bilan Hydrique — suivi et projection du stock hydrique des parcelles." />
   <title>SAM Bilan Hydrique</title>
   <link rel="manifest" href="manifest.json" />
-  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="icon" href="favicon-192.png" type="image/png" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <div class="sudexpe-mark" aria-label="SudExpé">SudExpé</div>
-      <img class="app-logo" src="icon.svg" alt="" />
+      <img class="app-logo" src="logo-sam-bilan-hydrique.png" alt="Logo SAM Bilan Hydrique" />
       <div class="brand-copy">
-        <h1>SAM Bilan Hydrique</h1>
-        <span>Sud Agro Météo</span>
+        <h1>Sud Agro Météo</h1>
+        <span>SAM Bilan Hydrique</span>
       </div>
     </div>
     <button id="authToggle" class="icon-btn" type="button" aria-label="Connexion" title="Connexion">
-      <span aria-hidden="true">●</span>
+      <img src="login-button.png" alt="" aria-hidden="true" />
     </button>
   </header>
 
@@ -87,11 +88,11 @@
             <article class="kpi"><span>Stock actuel</span><strong id="kpiStock">—</strong><small id="kpiStockSub">—</small></article>
             <article class="kpi"><span>Stock</span><strong id="kpiPercent">—</strong><small>de la RU</small></article>
             <article class="kpi"><span>Marge avant RFU</span><strong id="kpiMargin">—</strong><small id="kpiRfuSub">—</small></article>
-            <article class="kpi"><span>Besoin aujourd'hui</span><strong id="kpiNeed">—</strong><small>ET₀ × Kc</small></article>
+            <article class="kpi"><span>Besoin du jour</span><strong id="kpiNeed">—</strong><small>ET₀ × Kc</small></article>
           </div>
 
           <section id="adviceCard" class="card advice hidden">
-            <h2>Conseil d'irrigation</h2>
+            <h2>Repère irrigation</h2>
             <p id="adviceText"></p>
           </section>
 
@@ -102,30 +103,28 @@
                 <p id="chartSubtitle" class="muted small"></p>
               </div>
               <div class="inline-controls">
+                <label>Saison
+                  <select id="seasonSelect"></select>
+                </label>
                 <label>Période
                   <select id="periodSelect">
-                    <option value="14">14 jours + 7 j</option>
-                    <option value="30" selected>30 jours + 7 j</option>
-                    <option value="60">60 jours + 7 j</option>
-                    <option value="season">Saison + 7 j</option>
+                    <option value="14">14 jours</option>
+                    <option value="30" selected>30 jours</option>
+                    <option value="60">60 jours</option>
+                    <option value="season">Saison entière</option>
                   </select>
                 </label>
                 <button id="refreshBtn" class="btn secondary" type="button">Actualiser</button>
               </div>
             </div>
             <div class="chart-wrap"><canvas id="waterChart"></canvas></div>
-            <div class="legend-note">
-              <span><i class="dot observed"></i> Stock observé</span>
-              <span><i class="dot forecast"></i> Stock prévisionnel</span>
-              <span>Pluie et irrigation en barres</span>
-            </div>
           </section>
 
           <section class="summary-grid">
             <article class="card compact-card"><span>RU</span><strong id="summaryRu">—</strong></article>
             <article class="card compact-card"><span>RFU / seuil</span><strong id="summaryRfu">—</strong></article>
             <article class="card compact-card"><span>Drainage sur la période</span><strong id="summaryDrainage">—</strong></article>
-            <article class="card compact-card"><span>Kc aujourd'hui</span><strong id="summaryKc">—</strong></article>
+            <article class="card compact-card"><span>Kc du jour</span><strong id="summaryKc">—</strong></article>
           </section>
 
           <section class="card">
@@ -167,7 +166,7 @@
             <h2>Ajouter une irrigation</h2>
             <div class="form-grid">
               <label>Date<input id="irrigationDate" type="date" /></label>
-              <label>Quantité réellement délivrée (mm)<input id="irrigationAmount" type="number" min="0" step="0.1" inputmode="decimal" /><small id="irrigationConversion" class="muted">—</small></label>
+              <label>Quantité (mm)<input id="irrigationAmount" type="number" min="0" step="0.1" inputmode="decimal" /><small id="irrigationConversion" class="muted">—</small></label>
               <label class="check-label"><input id="repeatIrrigation" type="checkbox" /> Répéter cette irrigation</label>
             </div>
             <div id="repeatOptions" class="repeat-box hidden">
@@ -182,14 +181,20 @@
                 </label>
                 <label>Date de fin<input id="repeatEndDate" type="date" /></label>
               </div>
-              <p class="muted small">La répétition est limitée à aujourd'hui dans cette version.</p>
             </div>
             <div class="actions"><button id="saveIrrigationBtn" class="btn primary" type="button">Enregistrer</button></div>
             <p id="irrigationMessage" class="form-message"></p>
           </section>
 
           <section class="card">
-            <h2>Historique des irrigations</h2>
+            <div class="row-between wrap gap">
+              <h2>Historique des irrigations</h2>
+              <div class="bulk-actions">
+                <label class="check-inline"><input id="selectAllIrrigation" type="checkbox" /> Tout sélectionner</label>
+                <button id="deleteSelectedIrrigationBtn" class="btn danger" type="button" disabled>Supprimer la sélection</button>
+              </div>
+            </div>
+            <div id="selectedIrrigationCount" class="muted small list-helper hidden"></div>
             <div id="irrigationList" class="item-list"></div>
           </section>
         </div>
@@ -198,20 +203,20 @@
       <section id="tab-parcel" class="tab-panel">
         <section class="card">
           <div class="row-between wrap gap">
-            <div><h2 id="parcelFormTitle">Nouvelle parcelle</h2><p class="muted small">Le bilan démarre le 1er mars avec une RU considérée pleine.</p></div>
+            <div><h2 id="parcelFormTitle">Nouvelle parcelle</h2></div>
             <button id="deleteParcelBtn" class="btn danger hidden" type="button">Supprimer</button>
           </div>
 
-          <div class="section-title">Identification</div>
+          <div class="section-title">Informations générales</div>
           <div class="form-grid">
-            <label>Nom de la parcelle<input id="parcelName" type="text" maxlength="80" /></label>
-            <label>Surface (ha)<input id="parcelArea" type="number" min="0.01" step="0.01" inputmode="decimal" /></label>
+            <label>Nom de la parcelle<input id="parcelName" type="text" /></label>
+            <label>Surface (ha)<input id="parcelArea" type="number" min="0" step="0.01" inputmode="decimal" /></label>
           </div>
 
           <div class="section-title">Localisation</div>
           <div class="location-actions">
             <div class="search-wrap">
-              <input id="locationSearch" type="search" placeholder="Chercher un lieu en France" />
+              <input id="locationSearch" type="text" placeholder="Chercher un lieu" />
               <button id="searchLocationBtn" class="btn secondary" type="button">Rechercher</button>
             </div>
             <button id="geolocateBtn" class="btn secondary" type="button">Trouver ma position</button>
@@ -249,11 +254,6 @@
           <div class="kc-calendar">
             <strong>Calendrier Kc</strong>
             <p>01/03–30/04 : initial · 01/05–31/05 : transition · 01/06–10/08 : mi-saison · 11/08–30/09 : transition · 01/10–31/10 : fin.</p>
-          </div>
-
-          <div class="notice">
-            <strong>Création en cours de saison</strong>
-            <p>Pour un bilan fiable, renseignez les irrigations réalisées depuis le 1er mars. Les pluies et l'ET₀ sont récupérées automatiquement.</p>
           </div>
 
           <div class="actions"><button id="saveParcelBtn" class="btn primary" type="button">Enregistrer la parcelle</button></div>

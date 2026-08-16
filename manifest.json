@@ -1,0 +1,21 @@
+{
+  "name": "SAM Bilan Hydrique",
+  "short_name": "SAM Bilan",
+  "description": "Suivi du bilan hydrique des parcelles – Sud Agro Météo",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#d7002f",
+  "icons": [
+    {
+      "src": "favicon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
