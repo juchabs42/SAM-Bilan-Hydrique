@@ -21,9 +21,15 @@
         <h1>SAM Bilan Hydrique</h1>
       </div>
     </div>
-    <button id="authToggle" class="icon-btn" type="button" aria-label="Connexion" title="Connexion">
-      <img src="login-button.png" alt="" aria-hidden="true" />
-    </button>
+    <div id="topbarSession" class="session-card topbar-session hidden">
+      <div class="session-copy">
+        <span class="session-kicker">CONNECTÉ</span>
+        <strong id="userEmailTopbar"></strong>
+      </div>
+      <button id="logoutBtn" class="session-logout" type="button" aria-label="Se déconnecter" title="Se déconnecter">
+        <span aria-hidden="true">↪</span>
+      </button>
+    </div>
   </header>
 
   <main class="shell">
@@ -52,18 +58,7 @@
         </div>
         <p class="muted small">Les comptes sont créés par l'administrateur. Il n'y a pas d'auto-inscription.</p>
       </div>
-      <div id="loggedInPanel" class="hidden">
-        <div class="session-card">
-          <div class="session-copy">
-            <span class="session-kicker">CONNECTÉ</span>
-            <strong id="userEmail"></strong>
-          </div>
-          <button id="logoutBtn" class="session-logout" type="button" aria-label="Se déconnecter" title="Se déconnecter">
-            <span aria-hidden="true">↪</span>
-          </button>
-        </div>
-      </div>
-      <p id="authMessage" class="form-message"></p>
+<p id="authMessage" class="form-message"></p>
     </section>
 
     <section id="appArea" class="hidden">
