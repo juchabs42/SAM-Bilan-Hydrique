@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sam-bilan-hydrique-v10';
+const CACHE_NAME = 'sam-bilan-hydrique-v9';
 
 const APP_SHELL = [
   './',

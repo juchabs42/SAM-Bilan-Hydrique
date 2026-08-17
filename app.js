@@ -1222,6 +1222,124 @@ const todayLinePlugin = {
   }
 };
 
+const dragZoomOverlayPlugin = {
+  id: 'dragZoomOverlay',
+  afterDraw(chart) {
+    const selection = chart.$dragZoomSelection;
+    if (!selection) return;
+    const { ctx, chartArea } = chart;
+    const left = Math.max(chartArea.left, Math.min(selection.startX, selection.currentX));
+    const right = Math.min(chartArea.right, Math.max(selection.startX, selection.currentX));
+    if (right <= left) return;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(215, 0, 47, 0.10)';
+    ctx.strokeStyle = 'rgba(215, 0, 47, 0.70)';
+    ctx.lineWidth = 1.2;
+    ctx.fillRect(left, chartArea.top, right - left, chartArea.bottom - chartArea.top);
+    ctx.strokeRect(left, chartArea.top, right - left, chartArea.bottom - chartArea.top);
+    ctx.restore();
+  }
+};
+
+function installChartDragZoom(chart) {
+  const canvas = chart.canvas;
+  canvas.style.cursor = 'crosshair';
+  canvas.style.touchAction = 'pan-y';
+
+  let dragging = false;
+  let pointerId = null;
+
+  const chartPoint = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = (event.clientX - rect.left) * (chart.width / rect.width);
+    const y = (event.clientY - rect.top) * (chart.height / rect.height);
+    return { x, y };
+  };
+
+  const isInsideChart = ({ x, y }) => {
+    const a = chart.chartArea;
+    return x >= a.left && x <= a.right && y >= a.top && y <= a.bottom;
+  };
+
+  const onPointerDown = (event) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const point = chartPoint(event);
+    if (!isInsideChart(point)) return;
+    dragging = true;
+    pointerId = event.pointerId;
+    canvas.setPointerCapture?.(pointerId);
+    chart.$dragZoomSelection = { startX: point.x, currentX: point.x };
+    chart.draw();
+  };
+
+  const onPointerMove = (event) => {
+    if (!dragging || event.pointerId !== pointerId) return;
+    const point = chartPoint(event);
+    const a = chart.chartArea;
+    chart.$dragZoomSelection.currentX = Math.max(a.left, Math.min(point.x, a.right));
+    chart.draw();
+  };
+
+  const finishDrag = (event) => {
+    if (!dragging || event.pointerId !== pointerId) return;
+    dragging = false;
+    canvas.releasePointerCapture?.(pointerId);
+    pointerId = null;
+
+    const selection = chart.$dragZoomSelection;
+    chart.$dragZoomSelection = null;
+    if (!selection) {
+      chart.draw();
+      return;
+    }
+
+    const left = Math.min(selection.startX, selection.currentX);
+    const right = Math.max(selection.startX, selection.currentX);
+    if (right - left < 18) {
+      chart.draw();
+      return;
+    }
+
+    const xScale = chart.scales.x;
+    const labels = chart.data.labels || [];
+    let startIndex = Math.round(xScale.getValueForPixel(left));
+    let endIndex = Math.round(xScale.getValueForPixel(right));
+    startIndex = Math.max(0, Math.min(startIndex, labels.length - 1));
+    endIndex = Math.max(0, Math.min(endIndex, labels.length - 1));
+    if (endIndex <= startIndex) {
+      chart.draw();
+      return;
+    }
+
+    xScale.options.min = labels[startIndex];
+    xScale.options.max = labels[endIndex];
+    chart.update('none');
+  };
+
+  const resetZoom = () => {
+    const xScale = chart.scales.x;
+    delete xScale.options.min;
+    delete xScale.options.max;
+    chart.$dragZoomSelection = null;
+    chart.update('none');
+  };
+
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', finishDrag);
+  canvas.addEventListener('pointercancel', finishDrag);
+  canvas.addEventListener('dblclick', resetZoom);
+
+  chart.$dragZoomCleanup = () => {
+    canvas.removeEventListener('pointerdown', onPointerDown);
+    canvas.removeEventListener('pointermove', onPointerMove);
+    canvas.removeEventListener('pointerup', finishDrag);
+    canvas.removeEventListener('pointercancel', finishDrag);
+    canvas.removeEventListener('dblclick', resetZoom);
+  };
+}
+
 const waterZonesPlugin = {
   id: 'waterZones',
   beforeDatasetsDraw(chart) {
@@ -1274,7 +1392,7 @@ function renderChart(rows) {
   const config = {
     type: 'line',
     data,
-    plugins: [waterZonesPlugin, todayLinePlugin],
+    plugins: [waterZonesPlugin, todayLinePlugin, dragZoomOverlayPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -1292,6 +1410,17 @@ function renderChart(rows) {
           displayColors: true,
           boxPadding: 4,
           callbacks: {
+            labelColor(context) {
+              const dataset = context.dataset || {};
+              const color = typeof dataset.backgroundColor === 'string'
+                ? dataset.backgroundColor
+                : (typeof dataset.borderColor === 'string' ? dataset.borderColor : '#666');
+              return {
+                backgroundColor: color,
+                borderColor: color,
+                borderWidth: 0
+              };
+            },
             afterBody(items) {
               const idx = items[0]?.dataIndex;
               const row = rows[idx];
@@ -1312,8 +1441,12 @@ function renderChart(rows) {
     }
   };
 
-  if (state.chart) state.chart.destroy();
+  if (state.chart) {
+    state.chart.$dragZoomCleanup?.();
+    state.chart.destroy();
+  }
   state.chart = new Chart($('waterChart'), config);
+  installChartDragZoom(state.chart);
 }
 
 function originalRainForDate(date) {
