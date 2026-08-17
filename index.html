@@ -53,9 +53,14 @@
         <p class="muted small">Les comptes sont créés par l'administrateur. Il n'y a pas d'auto-inscription.</p>
       </div>
       <div id="loggedInPanel" class="hidden">
-        <div class="row-between">
-          <div><strong id="userEmail"></strong><div class="muted small">Connecté</div></div>
-          <button id="logoutBtn" class="btn secondary" type="button">Se déconnecter</button>
+        <div class="session-card">
+          <div class="session-copy">
+            <span class="session-kicker">CONNECTÉ</span>
+            <strong id="userEmail"></strong>
+          </div>
+          <button id="logoutBtn" class="session-logout" type="button" aria-label="Se déconnecter" title="Se déconnecter">
+            <span aria-hidden="true">↪</span>
+          </button>
         </div>
       </div>
       <p id="authMessage" class="form-message"></p>
