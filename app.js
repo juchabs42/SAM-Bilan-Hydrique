@@ -18,10 +18,18 @@ const SOIL_CLASSES = [
   { name: 'Limon argileux', clayMin: 20, clayMax: 35, siltMin: 70, siltMax: 90, rum: 1.95 }
 ];
 
-const STANDARD_KC = {
-  noCover: { initial: 0.60, mid: 0.95, end: 0.75 },
-  cover: { initial: 0.80, mid: 1.20, end: 0.85 }
+const KC_TABLE = {
+  bare: {
+    drip: { april: 0.50, june: 0.65, peak: 0.80, post: 0.50 },
+    sprinkler: { april: 0.60, june: 0.75, peak: 0.90, post: 0.60 }
+  },
+  vegetated: {
+    drip: { april: 0.60, june: 0.75, peak: 0.90, post: 0.60 },
+    sprinkler: { april: 0.70, june: 0.85, peak: 1.00, post: 0.70 }
+  }
 };
+
+const EFFECTIVE_RAIN_THRESHOLD_MM = 5;
 
 const state = {
   supabase: null,
@@ -35,7 +43,11 @@ const state = {
   chart: null,
   selectedLocation: null,
   editingIrrigation: null,
-  deferredInstallPrompt: null
+  deferredInstallPrompt: null,
+  selectedSeasonYear: null,
+  loadedWeatherSeasonYear: null,
+  selectedIrrigationIds: new Set(),
+  pendingIrrigationImport: []
 };
 
 const $ = (id) => document.getElementById(id);
@@ -107,13 +119,33 @@ function isSupabaseConfigured() {
   return cfg.supabaseUrl && cfg.supabaseAnonKey && !cfg.supabaseUrl.includes('VOTRE-PROJET') && !cfg.supabaseAnonKey.includes('VOTRE_CLE');
 }
 
-function getSeasonStart(date = localToday()) {
-  const year = date.getMonth() >= 2 ? date.getFullYear() : date.getFullYear() - 1;
-  return new Date(year, 2, 1, 12);
+function getCurrentSeasonYear(date = localToday()) {
+  return date.getMonth() >= 3 ? date.getFullYear() : date.getFullYear() - 1;
 }
 
-function standardKcForCover(covered) {
-  return covered ? STANDARD_KC.cover : STANDARD_KC.noCover;
+function getSeasonStart(year = getCurrentSeasonYear()) {
+  return new Date(Number(year), 3, 1, 12);
+}
+
+function getSeasonEnd(year = getCurrentSeasonYear()) {
+  return new Date(Number(year), 9, 31, 12);
+}
+
+function isCurrentSeasonYear(year) {
+  return Number(year) === getCurrentSeasonYear();
+}
+
+function defaultKcForParcel(parcelOrOptions = {}) {
+  const irrigationSystem = parcelOrOptions.irrigation_system || parcelOrOptions.irrigationSystem || 'drip';
+  const vegetated = parcelOrOptions.ground_cover ?? parcelOrOptions.groundCover ?? false;
+  const coverKey = vegetated ? 'vegetated' : 'bare';
+  return KC_TABLE[coverKey][irrigationSystem] || KC_TABLE[coverKey].drip;
+}
+
+function harvestDateForYear(parcel, year) {
+  if (!parcel.harvest_date) return new Date(Number(year), 9, 31, 12);
+  const source = parseISO(String(parcel.harvest_date).slice(0, 10));
+  return new Date(Number(year), source.getMonth(), source.getDate(), 12);
 }
 
 function findSoilClass(clay, silt) {
@@ -127,30 +159,37 @@ function interpolation(a, b, t) {
   return a + (b - a) * clamp(t, 0, 1);
 }
 
+function kcValuesForParcel(parcel) {
+  if (!parcel.use_custom_kc) return defaultKcForParcel(parcel);
+  const fallback = defaultKcForParcel(parcel);
+  return {
+    april: Number.isFinite(Number(parcel.kc_initial)) ? Number(parcel.kc_initial) : fallback.april,
+    june: Number.isFinite(Number(parcel.kc_mid)) ? Number(parcel.kc_mid) : fallback.june,
+    peak: Number.isFinite(Number(parcel.kc_peak)) ? Number(parcel.kc_peak) : (Number.isFinite(Number(parcel.kc_mid)) ? Number(parcel.kc_mid) : fallback.peak),
+    post: Number.isFinite(Number(parcel.kc_end)) ? Number(parcel.kc_end) : fallback.post
+  };
+}
+
 function kcForDate(iso, parcel) {
   const d = parseISO(iso);
   const y = d.getFullYear();
   const md = (m, day) => new Date(y, m - 1, day, 12);
-  const initial = Number(parcel.kc_initial);
-  const mid = Number(parcel.kc_mid);
-  const end = Number(parcel.kc_end);
+  const kc = kcValuesForParcel(parcel);
+  const harvest = harvestDateForYear(parcel, y);
 
-  if (d >= md(3, 1) && d <= md(4, 30)) return initial;
-  if (d >= md(5, 1) && d <= md(5, 31)) {
+  if (d < md(4, 1) || d > md(10, 31)) return 0;
+  if (d <= md(4, 30)) return kc.april;
+  if (d <= md(5, 31)) {
     const t = (d - md(5, 1)) / (md(5, 31) - md(5, 1));
-    return interpolation(initial, mid, t);
+    return interpolation(kc.april, kc.june, t);
   }
-  if (d >= md(6, 1) && d <= md(8, 10)) return mid;
-  if (d >= md(8, 11) && d <= md(9, 30)) {
-    const t = (d - md(8, 11)) / (md(9, 30) - md(8, 11));
-    return interpolation(mid, end, t);
-  }
-  if (d >= md(10, 1) && d <= md(10, 31)) return end;
-  return 0;
+  if (d <= md(6, 30)) return kc.june;
+  if (d <= harvest) return kc.peak;
+  return kc.post;
 }
 
 function setupPwa() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.warn);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).catch(console.warn);
 
   const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
   const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth <= 800;
@@ -185,23 +224,37 @@ function bindEvents() {
   qsa('[data-open-parcel]').forEach(btn => btn.addEventListener('click', () => openNewParcel()));
   $('newParcelBtn').addEventListener('click', openNewParcel);
   $('parcelSelect').addEventListener('change', () => activateParcel($('parcelSelect').value));
+  $('seasonSelect').addEventListener('change', async () => {
+    state.selectedSeasonYear = Number($('seasonSelect').value || getCurrentSeasonYear());
+    state.loadedWeatherSeasonYear = null;
+    clearIrrigationImport();
+    await refreshBalance(true);
+  });
 
   $('searchLocationBtn').addEventListener('click', searchLocation);
   $('locationSearch').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); searchLocation(); } });
   $('geolocateBtn').addEventListener('click', geolocate);
 
   ['clayPct', 'siltPct', 'sandPct', 'rootDepth'].forEach(id => $(id).addEventListener('input', updateSoilPreview));
-  $('groundCover').addEventListener('change', updateKcDefaults);
+  $('irrigationSystem').addEventListener('change', updateKcDefaults);
+  $('groundCoverType').addEventListener('change', updateKcDefaults);
   $('customKc').addEventListener('change', () => {
     $('kcFields').classList.toggle('hidden', !$('customKc').checked);
     if (!$('customKc').checked) updateKcDefaults();
+    else updateKcCalendarText();
   });
+  ['kcInitial','kcMid','kcPeak','kcEnd'].forEach(id => $(id).addEventListener('input', () => { if ($('customKc').checked) updateKcCalendarText(); }));
   $('saveParcelBtn').addEventListener('click', saveParcel);
   $('deleteParcelBtn').addEventListener('click', deleteParcel);
 
   $('repeatIrrigation').addEventListener('change', () => $('repeatOptions').classList.toggle('hidden', !$('repeatIrrigation').checked));
   $('irrigationAmount').addEventListener('input', updateIrrigationConversion);
   $('saveIrrigationBtn').addEventListener('click', saveIrrigation);
+  $('irrigationImportFile').addEventListener('change', readIrrigationImportFile);
+  $('importIrrigationsBtn').addEventListener('click', importIrrigations);
+  $('cancelIrrigationImportBtn').addEventListener('click', clearIrrigationImport);
+  $('selectAllIrrigation').addEventListener('change', toggleAllIrrigations);
+  $('deleteSelectedIrrigationBtn').addEventListener('click', deleteSelectedIrrigations);
 
   $('cancelModalBtn').addEventListener('click', closeIrrigationModal);
   $('modalBackdrop').addEventListener('click', e => { if (e.target === $('modalBackdrop')) closeIrrigationModal(); });
@@ -292,7 +345,9 @@ async function loadParcels() {
     return;
   }
   state.parcels = data || [];
+  if (!state.selectedSeasonYear) state.selectedSeasonYear = getCurrentSeasonYear();
   renderParcelSelector();
+  populateSeasonOptions();
 
   const stored = localStorage.getItem('samBilanActiveParcel');
   const target = state.parcels.find(p => p.id === stored) || state.parcels[0] || null;
@@ -320,8 +375,29 @@ function renderParcelSelector() {
   });
 }
 
+function populateSeasonOptions() {
+  const select = $('seasonSelect');
+  const currentYear = getCurrentSeasonYear();
+  const years = [];
+  for (let year = currentYear; year >= currentYear - 5; year -= 1) years.push(year);
+  if (!state.selectedSeasonYear) state.selectedSeasonYear = currentYear;
+  if (!years.includes(Number(state.selectedSeasonYear))) years.unshift(Number(state.selectedSeasonYear));
+  const seen = new Set();
+  select.innerHTML = years.filter(y => {
+    if (seen.has(y)) return false;
+    seen.add(y);
+    return true;
+  }).map(year => {
+    const selected = Number(year) === Number(state.selectedSeasonYear) ? ' selected' : '';
+    return '<option value="' + year + '"' + selected + '>Saison ' + year + '</option>';
+  }).join('');
+}
+
 function showNoParcel() {
   state.activeParcel = null;
+  state.selectedSeasonYear = getCurrentSeasonYear();
+  state.loadedWeatherSeasonYear = null;
+  populateSeasonOptions();
   $('noParcelDashboard').classList.remove('hidden');
   $('dashboardContent').classList.add('hidden');
   $('noParcelIrrigation').classList.remove('hidden');
@@ -335,6 +411,10 @@ async function activateParcel(id) {
   state.activeParcel = parcel;
   state.weather = [];
   state.balance = [];
+  state.selectedIrrigationIds = new Set();
+  state.loadedWeatherSeasonYear = null;
+  if (!state.selectedSeasonYear) state.selectedSeasonYear = getCurrentSeasonYear();
+  populateSeasonOptions();
   localStorage.setItem('samBilanActiveParcel', id);
   $('parcelSelect').value = id;
   $('noParcelDashboard').classList.add('hidden');
@@ -345,7 +425,7 @@ async function activateParcel(id) {
   await Promise.all([loadIrrigations(), loadRainCorrections()]);
   renderIrrigationList();
   updateIrrigationConversion();
-  await refreshBalance();
+  await refreshBalance(true);
 }
 
 function openNewParcel() {
@@ -357,16 +437,14 @@ function resetParcelForm() {
   state.selectedLocation = null;
   $('parcelFormTitle').textContent = 'Nouvelle parcelle';
   $('deleteParcelBtn').classList.add('hidden');
-  ['parcelName','parcelArea','locationSearch','clayPct','siltPct','sandPct','rootDepth'].forEach(id => $(id).value = '');
+  ['parcelName','parcelArea','locationSearch','clayPct','siltPct','sandPct','rootDepth','harvestDate'].forEach(id => $(id).value = '');
   $('selectedLocation').textContent = 'Non définie';
   $('locationResults').innerHTML = '';
-  $('groundCover').checked = false;
+  $('irrigationSystem').value = 'drip';
+  $('groundCoverType').value = 'bare';
   $('customKc').checked = false;
   $('kcFields').classList.add('hidden');
-  const kc = STANDARD_KC.noCover;
-  $('kcInitial').value = kc.initial;
-  $('kcMid').value = kc.mid;
-  $('kcEnd').value = kc.end;
+  updateKcDefaults();
   $('soilClassResult').textContent = '—';
   $('rumResult').textContent = '—';
   $('ruResult').textContent = '—';
@@ -388,12 +466,17 @@ function fillParcelForm(parcel) {
   $('siltPct').value = parcel.silt_pct;
   $('sandPct').value = parcel.sand_pct;
   $('rootDepth').value = parcel.root_depth_cm;
-  $('groundCover').checked = !!parcel.ground_cover;
+  $('irrigationSystem').value = parcel.irrigation_system || 'drip';
+  $('groundCoverType').value = parcel.ground_cover ? 'vegetated' : 'bare';
+  $('harvestDate').value = parcel.harvest_date ? String(parcel.harvest_date).slice(0,10) : '';
   $('customKc').checked = !!parcel.use_custom_kc;
   $('kcFields').classList.toggle('hidden', !parcel.use_custom_kc);
-  $('kcInitial').value = parcel.kc_initial;
-  $('kcMid').value = parcel.kc_mid;
-  $('kcEnd').value = parcel.kc_end;
+  const kc = kcValuesForParcel(parcel);
+  $('kcInitial').value = kc.april;
+  $('kcMid').value = kc.june;
+  $('kcPeak').value = kc.peak;
+  $('kcEnd').value = kc.post;
+  updateKcCalendarText(kc);
   updateSoilPreview();
 }
 
@@ -470,12 +553,32 @@ function updateSoilPreview() {
   }
 }
 
+function updateKcCalendarText(kc = null) {
+  const values = kc || {
+    april: Number($('kcInitial').value),
+    june: Number($('kcMid').value),
+    peak: Number($('kcPeak').value),
+    post: Number($('kcEnd').value)
+  };
+  const text = $('kcCalendarText');
+  if (!text) return;
+  text.textContent = `Avril : ${num(values.april,2)} · Mai : transition progressive · Juin : ${num(values.june,2)} · Juillet à récolte : ${num(values.peak,2)} · Après récolte : ${num(values.post,2)}.`;
+}
+
 function updateKcDefaults() {
-  if ($('customKc').checked) return;
-  const kc = standardKcForCover($('groundCover').checked);
-  $('kcInitial').value = kc.initial;
-  $('kcMid').value = kc.mid;
-  $('kcEnd').value = kc.end;
+  if ($('customKc').checked) {
+    updateKcCalendarText();
+    return;
+  }
+  const kc = defaultKcForParcel({
+    irrigationSystem: $('irrigationSystem').value,
+    groundCover: $('groundCoverType').value === 'vegetated'
+  });
+  $('kcInitial').value = kc.april;
+  $('kcMid').value = kc.june;
+  $('kcPeak').value = kc.peak;
+  $('kcEnd').value = kc.post;
+  updateKcCalendarText(kc);
 }
 
 async function saveParcel() {
@@ -498,12 +601,19 @@ async function saveParcel() {
   const soil = findSoilClass(clay, silt);
   if (!soil) return setMessage('parcelMessage', 'Cette combinaison argile/limon ne correspond à aucune classe de votre tableau Excel.', 'error');
 
+  const irrigationSystem = $('irrigationSystem').value;
+  const groundCover = $('groundCoverType').value === 'vegetated';
+  const harvestDate = $('harvestDate').value;
+  if (!['drip','sprinkler'].includes(irrigationSystem)) return setMessage('parcelMessage', 'Choisissez le système d’irrigation.', 'error');
+  if (!harvestDate) return setMessage('parcelMessage', 'Renseignez la date de récolte.', 'error');
+
   const custom = $('customKc').checked;
   if (!custom) updateKcDefaults();
   const kcInitial = Number($('kcInitial').value);
   const kcMid = Number($('kcMid').value);
+  const kcPeak = Number($('kcPeak').value);
   const kcEnd = Number($('kcEnd').value);
-  if (![kcInitial, kcMid, kcEnd].every(v => Number.isFinite(v) && v >= 0 && v <= 2)) return setMessage('parcelMessage', 'Vérifiez les valeurs de Kc.', 'error');
+  if (![kcInitial, kcMid, kcPeak, kcEnd].every(v => Number.isFinite(v) && v >= 0 && v <= 2)) return setMessage('parcelMessage', 'Vérifiez les valeurs de Kc.', 'error');
 
   const ru = soil.rum * depth;
   const rfu = ru * 0.50;
@@ -523,10 +633,13 @@ async function saveParcel() {
     ru_mm: ru,
     p_factor: 0.50,
     rfu_mm: rfu,
-    ground_cover: $('groundCover').checked,
+    irrigation_system: irrigationSystem,
+    ground_cover: groundCover,
+    harvest_date: harvestDate,
     use_custom_kc: custom,
     kc_initial: kcInitial,
     kc_mid: kcMid,
+    kc_peak: kcPeak,
     kc_end: kcEnd,
     updated_at: new Date().toISOString()
   };
@@ -571,9 +684,8 @@ function updateIrrigationConversion() {
   const amount = Number($('irrigationAmount').value);
   const area = Number(state.activeParcel?.area_ha || 0);
   if (!(amount >= 0) || !area) return $('irrigationConversion').textContent = '—';
-  const m3ha = amount * 10;
-  const m3parcel = m3ha * area;
-  $('irrigationConversion').textContent = `${num(m3ha,1)} m³/ha · ${num(m3parcel,1)} m³ sur la parcelle`;
+  const m3parcel = amount * 10 * area;
+  $('irrigationConversion').textContent = `${num(m3parcel,1)} m³ sur la parcelle`;
 }
 
 async function saveIrrigation() {
@@ -619,9 +731,138 @@ async function saveIrrigation() {
   await refreshBalance();
 }
 
+
+function parseImportedDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return toISO(value);
+  if (typeof value === 'number' && window.XLSX?.SSF?.parse_date_code) {
+    const parsed = XLSX.SSF.parse_date_code(value);
+    if (parsed?.y && parsed?.m && parsed?.d) {
+      return `${parsed.y}-${String(parsed.m).padStart(2,'0')}-${String(parsed.d).padStart(2,'0')}`;
+    }
+  }
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(text)) {
+    const [y,m,d] = text.split('-').map(Number);
+    return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  }
+  const fr = text.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (fr) return `${fr[3]}-${String(fr[2]).padStart(2,'0')}-${String(fr[1]).padStart(2,'0')}`;
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : toISO(parsed);
+}
+
+function parseImportedAmount(value) {
+  if (typeof value === 'number') return value;
+  const normalized = String(value ?? '').trim().replace(/\s/g,'').replace(',','.');
+  if (!normalized) return NaN;
+  return Number(normalized);
+}
+
+function clearIrrigationImport() {
+  state.pendingIrrigationImport = [];
+  const input = $('irrigationImportFile');
+  if (input) input.value = '';
+  const preview = $('irrigationImportPreview');
+  if (preview) preview.classList.add('hidden');
+  const details = $('irrigationImportDetails');
+  if (details) details.innerHTML = '';
+  setMessage('irrigationImportMessage', '');
+}
+
+async function readIrrigationImportFile() {
+  setMessage('irrigationImportMessage', '');
+  state.pendingIrrigationImport = [];
+  $('irrigationImportPreview').classList.add('hidden');
+  const file = $('irrigationImportFile').files?.[0];
+  if (!file) return;
+  if (!window.XLSX) return setMessage('irrigationImportMessage', 'Le module Excel n’a pas pu être chargé.', 'error');
+  if (!state.activeParcel) return setMessage('irrigationImportMessage', 'Choisissez d’abord une parcelle.', 'error');
+
+  try {
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
+    if (!rows.length) return setMessage('irrigationImportMessage', 'Le fichier ne contient aucune ligne à importer.', 'error');
+
+    const first = rows[0];
+    const keys = Object.keys(first);
+    const dateKey = keys.find(k => String(k).trim().toLowerCase() === 'date');
+    const amountKey = keys.find(k => String(k).trim().toLowerCase() === 'apport');
+    if (!dateKey || !amountKey) return setMessage('irrigationImportMessage', 'Le fichier doit contenir exactement une colonne « Date » et une colonne « Apport ».', 'error');
+
+    const seasonYear = Number(state.selectedSeasonYear || getCurrentSeasonYear());
+    const seasonStart = toISO(getSeasonStart(seasonYear));
+    const seasonEnd = toISO(getSeasonEnd(seasonYear));
+    const today = toISO(localToday());
+    const valid = [];
+    const errors = [];
+
+    rows.forEach((row, index) => {
+      const date = parseImportedDate(row[dateKey]);
+      const amount = parseImportedAmount(row[amountKey]);
+      const line = index + 2;
+      if (!date) return errors.push(`Ligne ${line} : date illisible.`);
+      if (!(amount >= 0)) return errors.push(`Ligne ${line} : apport invalide.`);
+      if (date < seasonStart || date > seasonEnd) return errors.push(`Ligne ${line} : ${fmtDate(date)} est hors de la saison ${seasonYear}.`);
+      if (isCurrentSeasonYear(seasonYear) && date > today) return errors.push(`Ligne ${line} : ${fmtDate(date)} est dans le futur.`);
+      valid.push({ irrigation_date: date, amount_mm: amount });
+    });
+
+    if (errors.length) {
+      const shown = errors.slice(0, 8).map(e => `<li>${escapeHTML(e)}</li>`).join('');
+      const more = errors.length > 8 ? `<li>… ${errors.length - 8} autre(s) erreur(s).</li>` : '';
+      $('irrigationImportDetails').innerHTML = `<div class="import-errors"><strong>${errors.length} ligne(s) à corriger</strong><ul>${shown}${more}</ul></div>`;
+      $('irrigationImportPreview').classList.remove('hidden');
+      $('importIrrigationsBtn').disabled = true;
+      return setMessage('irrigationImportMessage', 'Corrigez le fichier avant de l’importer.', 'error');
+    }
+
+    valid.sort((a,b) => a.irrigation_date.localeCompare(b.irrigation_date));
+    state.pendingIrrigationImport = valid;
+    const total = valid.reduce((sum, row) => sum + Number(row.amount_mm), 0);
+    $('irrigationImportDetails').innerHTML = `
+      <div class="import-summary-grid">
+        <div><span>Irrigations détectées</span><strong>${valid.length}</strong></div>
+        <div><span>Période</span><strong>${valid.length ? `${fmtDate(valid[0].irrigation_date)} → ${fmtDate(valid[valid.length - 1].irrigation_date)}` : '—'}</strong></div>
+        <div><span>Total</span><strong>${num(total,1)} mm</strong></div>
+      </div>`;
+    $('irrigationImportPreview').classList.remove('hidden');
+    $('importIrrigationsBtn').disabled = valid.length === 0;
+    setMessage('irrigationImportMessage', `Fichier prêt pour la saison ${seasonYear}.`, 'success');
+  } catch (err) {
+    setMessage('irrigationImportMessage', `Lecture du fichier impossible : ${err.message}`, 'error');
+  }
+}
+
+async function importIrrigations() {
+  if (!state.activeParcel || !state.pendingIrrigationImport.length) return;
+  const rows = state.pendingIrrigationImport.map(row => ({
+    user_id: state.user.id,
+    parcel_id: state.activeParcel.id,
+    irrigation_date: row.irrigation_date,
+    amount_mm: row.amount_mm
+  }));
+  $('importIrrigationsBtn').disabled = true;
+  const { error } = await state.supabase.from('irrigations').insert(rows);
+  if (error) {
+    $('importIrrigationsBtn').disabled = false;
+    return setMessage('irrigationImportMessage', error.message, 'error');
+  }
+  const count = rows.length;
+  clearIrrigationImport();
+  setMessage('irrigationImportMessage', `${count} irrigation${count > 1 ? 's' : ''} importée${count > 1 ? 's' : ''}.`, 'success');
+  await loadIrrigations();
+  renderIrrigationList();
+  await refreshBalance();
+}
+
 function renderIrrigationList() {
   const list = $('irrigationList');
   if (!state.irrigations.length) {
+    $('selectAllIrrigation').checked = false;
+    $('deleteSelectedIrrigationBtn').disabled = true;
+    $('selectedIrrigationCount').classList.add('hidden');
     list.innerHTML = '<div class="muted">Aucune irrigation enregistrée.</div>';
     return;
   }
@@ -629,13 +870,27 @@ function renderIrrigationList() {
   list.innerHTML = state.irrigations.map(item => {
     const amount = Number(item.amount_mm);
     const volume = amount * 10 * area;
+    const checked = state.selectedIrrigationIds.has(item.id) ? ' checked' : '';
     return `<div class="list-item">
-      <div><strong>${fmtDate(item.irrigation_date)} — ${num(amount,1)} mm</strong><div class="meta">${num(amount * 10,1)} m³/ha · ${num(volume,1)} m³ parcelle${item.series_id ? ' · irrigation répétée' : ''}</div></div>
+      <div class="list-item-main">
+        <label class="check-inline"><input type="checkbox" data-select-irrigation="${item.id}"${checked} /><span></span></label>
+        <div>
+          <strong>${fmtDate(item.irrigation_date)} — ${num(amount,1)} mm</strong>
+          <div class="meta">${num(volume,1)} m³ sur la parcelle${item.series_id ? ' · irrigation répétée' : ''}</div>
+        </div>
+      </div>
       <div class="list-actions"><button type="button" data-edit-irrigation="${item.id}">Modifier</button><button type="button" data-delete-irrigation="${item.id}">Supprimer</button></div>
     </div>`;
   }).join('');
+
   qsa('[data-edit-irrigation]').forEach(btn => btn.addEventListener('click', () => openIrrigationModal(btn.dataset.editIrrigation)));
   qsa('[data-delete-irrigation]').forEach(btn => btn.addEventListener('click', () => deleteIrrigation(btn.dataset.deleteIrrigation)));
+  qsa('[data-select-irrigation]').forEach(box => box.addEventListener('change', () => {
+    if (box.checked) state.selectedIrrigationIds.add(box.dataset.selectIrrigation);
+    else state.selectedIrrigationIds.delete(box.dataset.selectIrrigation);
+    syncIrrigationSelectionUi();
+  }));
+  syncIrrigationSelectionUi();
 }
 
 function openIrrigationModal(id) {
@@ -684,6 +939,40 @@ async function deleteIrrigation(id) {
   await refreshBalance();
 }
 
+function syncIrrigationSelectionUi() {
+  const total = state.irrigations.length;
+  const selected = state.selectedIrrigationIds.size;
+  $('selectAllIrrigation').checked = total > 0 && selected === total;
+  $('deleteSelectedIrrigationBtn').disabled = selected === 0;
+  const helper = $('selectedIrrigationCount');
+  if (selected === 0) {
+    helper.classList.add('hidden');
+    helper.textContent = '';
+  } else {
+    helper.classList.remove('hidden');
+    helper.textContent = `${selected} irrigation${selected > 1 ? 's' : ''} sélectionnée${selected > 1 ? 's' : ''}.`;
+  }
+}
+
+function toggleAllIrrigations() {
+  state.selectedIrrigationIds = $('selectAllIrrigation').checked
+    ? new Set(state.irrigations.map(item => item.id))
+    : new Set();
+  renderIrrigationList();
+}
+
+async function deleteSelectedIrrigations() {
+  const ids = [...state.selectedIrrigationIds];
+  if (!ids.length) return;
+  if (!confirm(`Supprimer ${ids.length} irrigation${ids.length > 1 ? 's' : ''} sélectionnée${ids.length > 1 ? 's' : ''} ?`)) return;
+  const { error } = await state.supabase.from('irrigations').delete().in('id', ids);
+  if (error) return toast(error.message);
+  state.selectedIrrigationIds = new Set();
+  await loadIrrigations();
+  renderIrrigationList();
+  await refreshBalance();
+}
+
 async function fetchJson(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Erreur HTTP ${response.status}`);
@@ -693,26 +982,39 @@ async function fetchJson(url) {
 }
 
 async function fetchWeather(parcel) {
+  const selectedYear = Number(state.selectedSeasonYear || getCurrentSeasonYear());
   const today = localToday();
   const todayIso = toISO(today);
-  const seasonStartIso = toISO(getSeasonStart(today));
-  const archiveEnd = addDays(today, -8);
-  const archiveEndIso = toISO(archiveEnd);
+  const seasonStartIso = toISO(getSeasonStart(selectedYear));
+  const seasonEndIso = toISO(getSeasonEnd(selectedYear));
   const weatherMap = new Map();
   const commonDaily = 'precipitation_sum,et0_fao_evapotranspiration';
 
-  if (seasonStartIso <= archiveEndIso) {
-    const archiveUrl = `https://archive-api.open-meteo.com/v1/archive?latitude=${parcel.latitude}&longitude=${parcel.longitude}&start_date=${seasonStartIso}&end_date=${archiveEndIso}&daily=${commonDaily}&timezone=auto`;
-    const archive = await fetchJson(archiveUrl);
-    ingestDailyWeather(weatherMap, archive.daily, todayIso);
+  if (isCurrentSeasonYear(selectedYear)) {
+    const archiveEnd = addDays(today, -8);
+    const archiveEndIso = toISO(archiveEnd);
+    if (seasonStartIso <= archiveEndIso) {
+      const archiveUrl = `https://archive-api.open-meteo.com/v1/archive?latitude=${parcel.latitude}&longitude=${parcel.longitude}&start_date=${seasonStartIso}&end_date=${archiveEndIso}&daily=${commonDaily}&timezone=auto`;
+      const archive = await fetchJson(archiveUrl);
+      ingestDailyWeather(weatherMap, archive.daily, todayIso);
+    }
+
+    const forecastUrl = `https://api.open-meteo.com/v1/forecast?latitude=${parcel.latitude}&longitude=${parcel.longitude}&daily=${commonDaily}&timezone=auto&past_days=7&forecast_days=8`;
+    const forecast = await fetchJson(forecastUrl);
+    ingestDailyWeather(weatherMap, forecast.daily, todayIso);
+
+    return [...weatherMap.values()]
+      .filter(row => row.date >= seasonStartIso)
+      .sort((a, b) => a.date.localeCompare(b.date));
   }
 
-  const forecastUrl = `https://api.open-meteo.com/v1/forecast?latitude=${parcel.latitude}&longitude=${parcel.longitude}&daily=${commonDaily}&timezone=auto&past_days=7&forecast_days=8`;
-  const forecast = await fetchJson(forecastUrl);
-  ingestDailyWeather(weatherMap, forecast.daily, todayIso);
+  const archiveUrl = `https://archive-api.open-meteo.com/v1/archive?latitude=${parcel.latitude}&longitude=${parcel.longitude}&start_date=${seasonStartIso}&end_date=${seasonEndIso}&daily=${commonDaily}&timezone=auto`;
+  const archive = await fetchJson(archiveUrl);
+  ingestDailyWeather(weatherMap, archive.daily, '9999-12-31');
 
   return [...weatherMap.values()]
-    .filter(row => row.date >= seasonStartIso)
+    .filter(row => row.date >= seasonStartIso && row.date <= seasonEndIso)
+    .map(row => ({ ...row, forecast: false }))
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -738,24 +1040,53 @@ function correctionMap() {
   return new Map(state.rainCorrections.map(c => [c.rain_date, Number(c.amount_mm)]));
 }
 
+function effectiveRainForWeather(weather, corrections) {
+  let pendingEpisode = 0;
+  let thresholdReached = false;
+
+  return weather.map(w => {
+    const corrected = corrections.has(w.date);
+    const rainInput = Math.max(0, corrected ? Number(corrections.get(w.date) || 0) : Number(w.precipitation || 0));
+    let rainEffective = 0;
+
+    if (rainInput > 0) {
+      if (thresholdReached) {
+        rainEffective = rainInput;
+      } else {
+        pendingEpisode += rainInput;
+        if (pendingEpisode >= EFFECTIVE_RAIN_THRESHOLD_MM) {
+          rainEffective = pendingEpisode;
+          pendingEpisode = 0;
+          thresholdReached = true;
+        }
+      }
+    } else {
+      pendingEpisode = 0;
+      thresholdReached = false;
+    }
+
+    return { rainInput, rainEffective, corrected };
+  });
+}
+
 function computeBalance(weather, parcel) {
   const ru = Number(parcel.ru_mm);
   const corrections = correctionMap();
   const irrig = irrigationMap();
+  const rainSeries = effectiveRainForWeather(weather, corrections);
   let stock = ru;
   let lastYear = null;
 
   return weather.map((w, index) => {
     const d = parseISO(w.date);
-    if (d.getMonth() === 2 && d.getDate() === 1 && (index === 0 || d.getFullYear() !== lastYear)) stock = ru;
+    if (d.getMonth() === 3 && d.getDate() === 1 && (index === 0 || d.getFullYear() !== lastYear)) stock = ru;
     lastYear = d.getFullYear();
 
     const kc = kcForDate(w.date, parcel);
     const etc = Math.max(0, Number(w.et0 || 0) * kc);
-    const corrected = corrections.has(w.date);
-    const rainUsed = corrected ? corrections.get(w.date) : Number(w.precipitation || 0);
+    const { rainInput, rainEffective, corrected } = rainSeries[index];
     const irrigation = Number(irrig.get(w.date) || 0);
-    const raw = stock - etc + rainUsed + irrigation;
+    const raw = stock - etc + rainEffective + irrigation;
     const drainage = Math.max(0, raw - ru);
     stock = clamp(raw, 0, ru);
 
@@ -766,7 +1097,9 @@ function computeBalance(weather, parcel) {
       kc,
       etc,
       rainOriginal: Number(w.precipitation || 0),
-      rainUsed,
+      rainInput,
+      rainUsed: rainEffective,
+      rainEffective,
       rainCorrected: corrected,
       irrigation,
       stock,
@@ -781,7 +1114,10 @@ async function refreshBalance(force = false) {
   $('refreshBtn').disabled = true;
   $('refreshBtn').textContent = 'Actualisation…';
   try {
-    if (force || !state.weather.length) state.weather = await fetchWeather(state.activeParcel);
+    if (force || !state.weather.length || Number(state.loadedWeatherSeasonYear) !== Number(state.selectedSeasonYear)) {
+      state.weather = await fetchWeather(state.activeParcel);
+      state.loadedWeatherSeasonYear = Number(state.selectedSeasonYear);
+    }
     state.balance = computeBalance(state.weather, state.activeParcel);
     renderDashboard();
     updateRainCorrectionInfo();
@@ -794,6 +1130,8 @@ async function refreshBalance(force = false) {
 }
 
 function currentBalanceRow() {
+  if (!state.balance.length) return null;
+  if (!isCurrentSeasonYear(state.selectedSeasonYear)) return state.balance[state.balance.length - 1] || null;
   const today = toISO(localToday());
   return state.balance.find(r => r.date === today) || [...state.balance].reverse().find(r => r.date <= today) || null;
 }
@@ -820,18 +1158,19 @@ function renderDashboard() {
 
   const shown = getDisplayedBalance();
   $('summaryDrainage').textContent = `${num(shown.reduce((s, r) => s + r.drainage, 0),1)} mm`;
-  $('chartSubtitle').textContent = `${p.name} · ${p.location_name} · RU ${num(ru,1)} mm · RFU ${num(rfu,1)} mm`;
+  $('chartSubtitle').textContent = `${p.name} · ${p.location_name} · Saison ${state.selectedSeasonYear} · RU ${num(ru,1)} mm · RFU ${num(rfu,1)} mm`;
   renderAdvice(current);
   renderChart(shown);
 }
 
 function getDisplayedBalance() {
   const period = $('periodSelect').value;
-  const today = toISO(localToday());
-  const futureEnd = toISO(addDays(localToday(), 7));
-  if (period === 'season') return state.balance.filter(r => r.date <= futureEnd);
-  const start = toISO(addDays(localToday(), -Number(period) + 1));
-  return state.balance.filter(r => r.date >= start && r.date <= futureEnd);
+  const isCurrent = isCurrentSeasonYear(state.selectedSeasonYear);
+  const endDate = isCurrent ? toISO(addDays(localToday(), 7)) : toISO(getSeasonEnd(state.selectedSeasonYear));
+  if (period === 'season') return state.balance.filter(r => r.date <= endDate);
+  const baseDate = isCurrent ? localToday() : getSeasonEnd(state.selectedSeasonYear);
+  const start = toISO(addDays(baseDate, -Number(period) + 1));
+  return state.balance.filter(r => r.date >= start && r.date <= endDate);
 }
 
 function renderAdvice(current) {
@@ -844,22 +1183,25 @@ function renderAdvice(current) {
   }
   card.classList.remove('hidden');
   const today = toISO(localToday());
-  const future = state.balance.filter(r => r.date > today).slice(0, 2);
+  const future = isCurrentSeasonYear(state.selectedSeasonYear)
+    ? state.balance.filter(r => r.date > today).slice(0, 2)
+    : [];
   const rain48 = future.reduce((s, r) => s + r.rainUsed, 0);
   const targetRow = future[future.length - 1] || current;
-  const recommended = Math.max(0, Number(p.ru_mm) - targetRow.stock);
+  const recommended = Math.max(0, Number(p.rfu_mm) - targetRow.stock);
   const volume = recommended * 10 * Number(p.area_ha);
 
   if (recommended <= 0.1) {
-    $('adviceText').textContent = `Le stock est sous le seuil RFU, mais ${num(rain48,1)} mm de pluie sont intégrés dans les prochaines 48 h et devraient recharger la réserve jusqu’à la RU. Pas d’irrigation conseillée pour le moment.`;
+    $('adviceText').textContent = `Le stock est sous le seuil RFU, mais ${num(rain48,1)} mm de pluie sont intégrés dans les prochaines 48 h et devraient permettre de revenir au niveau RFU. Pas d'irrigation à prévoir pour le moment.`;
   } else {
-    $('adviceText').textContent = `Le stock est sous le seuil RFU. Après prise en compte de ${num(rain48,1)} mm de pluie prévus dans les prochaines 48 h, il manquerait environ ${num(recommended,1)} mm pour revenir à la RU, soit ${num(recommended * 10,0)} m³/ha et ${num(volume,0)} m³ sur cette parcelle.`;
+    $('adviceText').textContent = `Le stock est sous le seuil RFU. Après prise en compte de ${num(rain48,1)} mm de pluie prévus dans les prochaines 48 h, il manquerait environ ${num(recommended,1)} mm pour revenir au niveau RFU, soit ${num(volume,0)} m³ sur cette parcelle.`;
   }
 }
 
 const todayLinePlugin = {
   id: 'todayLine',
   afterDraw(chart) {
+    if (!isCurrentSeasonYear(state.selectedSeasonYear)) return;
     const labels = chart.data.labels || [];
     const todayLabel = fmtShort(toISO(localToday()));
     const idx = labels.indexOf(todayLabel);
@@ -871,7 +1213,7 @@ const todayLinePlugin = {
     ctx.save();
     ctx.beginPath();
     ctx.setLineDash([5, 5]);
-    ctx.strokeStyle = '#8B1E2D';
+    ctx.strokeStyle = '#d7002f';
     ctx.lineWidth = 1.3;
     ctx.moveTo(point.x, chartArea.top);
     ctx.lineTo(point.x, chartArea.bottom);
@@ -887,16 +1229,17 @@ function renderChart(rows) {
   const forecast = rows.map((r, i) => (r.forecast || (firstForecast > 0 && i === firstForecast - 1)) ? r.stock : null);
   const ru = Number(state.activeParcel.ru_mm);
   const rfu = Number(state.activeParcel.rfu_mm);
+  const maxFlux = Math.max(5, ...rows.map(r => Math.max(r.rainUsed || 0, r.irrigation || 0)));
 
   const data = {
     labels,
     datasets: [
       { type: 'line', label: 'Stock observé', data: observed, yAxisID: 'yStock', borderColor: '#2b3137', backgroundColor: '#2b3137', borderWidth: 3, pointRadius: 1.5, tension: .25, spanGaps: false },
-      { type: 'line', label: 'Stock prévisionnel', data: forecast, yAxisID: 'yStock', borderColor: '#6e747b', backgroundColor: '#6e747b', borderWidth: 3, borderDash: [7,5], pointRadius: 1.5, tension: .25, spanGaps: true },
-      { type: 'line', label: 'RU', data: rows.map(() => ru), yAxisID: 'yStock', borderColor: '#4f8a5b', borderWidth: 1.5, borderDash: [4,4], pointRadius: 0 },
-      { type: 'line', label: 'RFU', data: rows.map(() => rfu), yAxisID: 'yStock', borderColor: '#b23b4b', borderWidth: 1.8, borderDash: [6,4], pointRadius: 0 },
-      { type: 'bar', label: 'Pluie', data: rows.map(r => r.rainUsed), yAxisID: 'yFlux', backgroundColor: 'rgba(54, 125, 185, .35)', borderWidth: 0 },
-      { type: 'bar', label: 'Irrigation', data: rows.map(r => r.irrigation), yAxisID: 'yFlux', backgroundColor: 'rgba(42, 151, 120, .45)', borderWidth: 0 }
+      { type: 'line', label: 'Stock prévisionnel', data: forecast, yAxisID: 'yStock', borderColor: '#7a8088', backgroundColor: '#7a8088', borderWidth: 3, borderDash: [7,5], pointRadius: 1.5, tension: .25, spanGaps: true },
+      { type: 'line', label: 'RU', data: rows.map(() => ru), yAxisID: 'yStock', borderColor: '#1f6f43', borderWidth: 2, borderDash: [], pointRadius: 0 },
+      { type: 'line', label: 'RFU', data: rows.map(() => rfu), yAxisID: 'yStock', borderColor: '#b24a00', borderWidth: 2, borderDash: [], pointRadius: 0 },
+      { type: 'bar', label: 'Pluie efficace', data: rows.map(r => r.rainUsed), yAxisID: 'yFlux', backgroundColor: 'rgba(0, 88, 183, .88)', borderWidth: 0, order: 0 },
+      { type: 'bar', label: 'Irrigation', data: rows.map(r => r.irrigation), yAxisID: 'yFlux', backgroundColor: 'rgba(0, 166, 81, .92)', borderWidth: 0, order: 0 }
     ]
   };
 
@@ -909,14 +1252,17 @@ function renderChart(rows) {
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } },
+        legend: { position: 'bottom', labels: { usePointStyle: false, boxWidth: 28, boxHeight: 3 } },
         tooltip: {
           callbacks: {
             afterBody(items) {
               const idx = items[0]?.dataIndex;
               const row = rows[idx];
               if (!row) return '';
-              return [`ET₀ : ${num(row.et0,1)} mm`, `Kc : ${num(row.kc,2)}`, `ETc : ${num(row.etc,1)} mm`, row.rainCorrected ? `Pluie corrigée (Open‑Meteo : ${num(row.rainOriginal,1)} mm)` : 'Pluie Open‑Meteo'];
+              const rainLines = [`Pluie Open‑Meteo : ${num(row.rainOriginal,1)} mm`];
+              if (row.rainCorrected) rainLines.push(`Pluie corrigée : ${num(row.rainInput,1)} mm`);
+              rainLines.push(`Pluie efficace : ${num(row.rainEffective,1)} mm`);
+              return [`ET₀ : ${num(row.et0,1)} mm`, `Kc : ${num(row.kc,2)}`, `ETc : ${num(row.etc,1)} mm`, ...rainLines];
             }
           }
         }
@@ -924,7 +1270,7 @@ function renderChart(rows) {
       scales: {
         x: { stacked: false, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: window.innerWidth < 700 ? 8 : 16 }, grid: { display: false } },
         yStock: { position: 'left', min: 0, suggestedMax: ru * 1.08, title: { display: true, text: 'Stock (mm)' } },
-        yFlux: { position: 'right', beginAtZero: true, title: { display: true, text: 'Pluie / irrigation (mm)' }, grid: { drawOnChartArea: false } }
+        yFlux: { position: 'right', reverse: true, min: 0, max: maxFlux * 1.15, title: { display: true, text: 'Pluie efficace / irrigation (mm)' }, grid: { drawOnChartArea: false } }
       }
     }
   };
@@ -947,7 +1293,7 @@ function updateRainCorrectionInfo() {
     $('rainOriginalInfo').textContent = 'Pas de donnée Open‑Meteo disponible pour cette date.';
     return;
   }
-  $('rainOriginalInfo').textContent = `Open‑Meteo : ${num(row.rainOriginal,1)} mm${corr ? ` · remplacement actuel : ${num(corr.amount_mm,1)} mm` : ''}`;
+  $('rainOriginalInfo').textContent = `Open‑Meteo : ${num(row.rainOriginal,1)} mm${corr ? ` · remplacement actuel : ${num(corr.amount_mm,1)} mm` : ''} · pluie efficace retenue : ${num(row.rainEffective,1)} mm`;
   $('rainCorrectionAmount').value = corr ? corr.amount_mm : '';
 }
 
@@ -990,10 +1336,9 @@ function exportRows() {
     Kc: round(r.kc, 3),
     'ETc / besoin (mm)': round(r.etc, 2),
     'Pluie Open-Meteo (mm)': round(r.rainOriginal, 2),
-    'Pluie utilisée (mm)': round(r.rainUsed, 2),
-    'Pluie corrigée': r.rainCorrected ? 'Oui' : 'Non',
+    'Pluie corrigée (mm)': r.rainCorrected ? round(r.rainInput, 2) : '',
+    'Pluie efficace (mm)': round(r.rainEffective, 2),
     'Irrigation (mm)': round(r.irrigation, 2),
-    'Irrigation (m3/ha)': round(r.irrigation * 10, 1),
     'Irrigation parcelle (m3)': round(r.irrigation * 10 * Number(state.activeParcel.area_ha), 1),
     'Stock eau (mm)': round(r.stock, 2),
     'Drainage/perte (mm)': round(r.drainage, 2),
@@ -1034,7 +1379,7 @@ function exportXlsx() {
   if (!state.activeParcel || !state.balance.length) return;
   if (!window.XLSX) return toast('Le module Excel n’a pas pu être chargé.');
   const ws = XLSX.utils.json_to_sheet(exportRows());
-  ws['!cols'] = [{wch:12},{wch:12},{wch:11},{wch:8},{wch:18},{wch:22},{wch:19},{wch:15},{wch:16},{wch:20},{wch:24},{wch:18},{wch:20},{wch:12}];
+  ws['!cols'] = [{wch:12},{wch:12},{wch:11},{wch:8},{wch:18},{wch:22},{wch:21},{wch:21},{wch:16},{wch:24},{wch:18},{wch:20},{wch:12}];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Bilan hydrique');
   XLSX.writeFile(wb, `SAM_Bilan_${safeFilename(state.activeParcel.name)}.xlsx`);

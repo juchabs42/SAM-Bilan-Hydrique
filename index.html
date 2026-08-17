@@ -131,7 +131,7 @@
             <div class="row-between wrap gap">
               <div>
                 <h2>Corriger une pluie</h2>
-                <p class="muted small">La valeur saisie remplace complètement la pluie Open‑Meteo pour la date choisie.</p>
+                <p class="muted small">La valeur saisie remplace complètement la pluie Open‑Meteo. Les épisodes pluvieux inférieurs à 5 mm ne rechargent pas le stock.</p>
               </div>
             </div>
             <div class="form-grid">
@@ -149,7 +149,7 @@
           <section class="card export-card">
             <div>
               <h2>Exporter les données</h2>
-              <p class="muted small">L'export contient date, ET₀, Kc, ETc, pluie Open‑Meteo, pluie utilisée, irrigation, stock et drainage.</p>
+              <p class="muted small">L'export contient date, ET₀, Kc, ETc, pluie Open‑Meteo, pluie corrigée, pluie efficace, irrigation, stock et drainage.</p>
             </div>
             <div class="actions">
               <button id="exportCsvBtn" class="btn secondary" type="button">CSV</button>
@@ -184,6 +184,24 @@
             </div>
             <div class="actions"><button id="saveIrrigationBtn" class="btn primary" type="button">Enregistrer</button></div>
             <p id="irrigationMessage" class="form-message"></p>
+          </section>
+
+          <section class="card import-card">
+            <div class="row-between wrap gap">
+              <div>
+                <h2>Importer des irrigations</h2>
+                <p class="muted small">Fichier Excel (.xlsx ou .xls) avec deux colonnes : <strong>Date</strong> et <strong>Apport</strong> (mm). L'import est associé à la saison sélectionnée dans l'onglet Bilan.</p>
+              </div>
+            </div>
+            <label class="file-label">Fichier Excel<input id="irrigationImportFile" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" /></label>
+            <div id="irrigationImportPreview" class="import-preview hidden">
+              <div id="irrigationImportDetails"></div>
+              <div class="actions">
+                <button id="importIrrigationsBtn" class="btn primary" type="button">Importer ces irrigations</button>
+                <button id="cancelIrrigationImportBtn" class="btn secondary" type="button">Annuler</button>
+              </div>
+            </div>
+            <p id="irrigationImportMessage" class="form-message"></p>
           </section>
 
           <section class="card">
@@ -244,16 +262,32 @@
           </div>
 
           <div class="section-title">Culture — Pommier</div>
-          <label class="check-label"><input id="groundCover" type="checkbox" /> Couvert végétal actif</label>
+          <div class="form-grid three">
+            <label>Système d'irrigation
+              <select id="irrigationSystem">
+                <option value="drip">Goutte-à-goutte</option>
+                <option value="sprinkler">Aspersion</option>
+              </select>
+            </label>
+            <label>Inter-rang
+              <select id="groundCoverType">
+                <option value="bare">Sol nu</option>
+                <option value="vegetated">Inter-rang végétalisé</option>
+              </select>
+            </label>
+            <label>Date de récolte<input id="harvestDate" type="date" /></label>
+          </div>
           <label class="check-label"><input id="customKc" type="checkbox" /> Personnaliser les Kc</label>
-          <div id="kcFields" class="form-grid three hidden">
-            <label>Kc initial<input id="kcInitial" type="number" min="0" max="2" step="0.01" /></label>
-            <label>Kc mi-saison<input id="kcMid" type="number" min="0" max="2" step="0.01" /></label>
-            <label>Kc fin<input id="kcEnd" type="number" min="0" max="2" step="0.01" /></label>
+          <div id="kcFields" class="form-grid four hidden">
+            <label>Kc avril<input id="kcInitial" type="number" min="0" max="2" step="0.01" /></label>
+            <label>Kc juin<input id="kcMid" type="number" min="0" max="2" step="0.01" /></label>
+            <label>Kc juillet → récolte<input id="kcPeak" type="number" min="0" max="2" step="0.01" /></label>
+            <label>Kc après récolte<input id="kcEnd" type="number" min="0" max="2" step="0.01" /></label>
           </div>
           <div class="kc-calendar">
             <strong>Calendrier Kc</strong>
-            <p>01/03–30/04 : initial · 01/05–31/05 : transition · 01/06–10/08 : mi-saison · 11/08–30/09 : transition · 01/10–31/10 : fin.</p>
+            <p id="kcCalendarText">Avril : Kc bas · Mai : transition progressive · Juin : Kc intermédiaire · Juillet à récolte : Kc maximum · Après récolte : Kc réduit.</p>
+            <p>Le bilan démarre le 1er avril avec la RU pleine.</p>
           </div>
 
           <div class="actions"><button id="saveParcelBtn" class="btn primary" type="button">Enregistrer la parcelle</button></div>

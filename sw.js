@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sam-bilan-hydrique-v8';
+const CACHE_NAME = 'sam-bilan-hydrique-v9';
 
 const APP_SHELL = [
   './',
@@ -9,7 +9,6 @@ const APP_SHELL = [
   './manifest.json',
   './logo-sam-bilan-hydrique.png',
   './sudexpe-logo.png',
-  './login-button.png',
   './favicon-192.png',
   './icon-512.png',
   './apple-touch-icon.png'

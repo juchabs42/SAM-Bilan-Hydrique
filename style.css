@@ -379,3 +379,29 @@ input:focus,select:focus{border-color:var(--red);box-shadow:0 0 0 3px rgba(215,0
   .topbar-session{padding:8px 10px}
   .session-logout{width:38px;height:38px}
 }
+
+/* ---- Bilan hydrique V2 : Kc, import Excel, graphique ---- */
+.form-grid.four{grid-template-columns:repeat(4,minmax(0,1fr))}
+.chart-wrap{height:640px}
+.import-card .file-label{max-width:620px}
+.import-preview{margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:12px;background:#f8f9fb}
+.import-summary-grid{display:grid;grid-template-columns:150px minmax(220px,1fr) 140px;gap:10px}
+.import-summary-grid>div{background:#fff;border:1px solid var(--border);border-radius:10px;padding:11px}
+.import-summary-grid span{display:block;color:var(--muted);font-size:.8rem;margin-bottom:4px}
+.import-summary-grid strong{display:block;font-size:.98rem}
+.import-errors{color:var(--danger)}
+.import-errors ul{margin:8px 0 0;padding-left:20px}
+.kc-calendar p+p{margin-top:7px}
+
+@media(max-width:920px){
+  .form-grid.four{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .chart-wrap{height:520px}
+  .import-summary-grid{grid-template-columns:1fr 1fr}
+}
+
+@media(max-width:480px){
+  .form-grid.four{grid-template-columns:1fr}
+  .chart-wrap{height:450px}
+  .import-summary-grid{grid-template-columns:1fr}
+  .import-preview .actions .btn{width:100%}
+}
