@@ -1222,6 +1222,34 @@ const todayLinePlugin = {
   }
 };
 
+const waterZonesPlugin = {
+  id: 'waterZones',
+  beforeDatasetsDraw(chart) {
+    const yScale = chart.scales?.yStock;
+    const { chartArea, ctx } = chart;
+    if (!yScale || !chartArea || !state.activeParcel) return;
+
+    const ru = Number(state.activeParcel.ru_mm);
+    const rfu = Number(state.activeParcel.rfu_mm);
+    const yRu = yScale.getPixelForValue(ru);
+    const yRfu = yScale.getPixelForValue(rfu);
+    const yZero = yScale.getPixelForValue(0);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-over';
+
+    // Zone de confort hydrique : de la RU à la RFU.
+    ctx.fillStyle = 'rgba(74, 164, 92, 0.11)';
+    ctx.fillRect(chartArea.left, Math.min(yRu, yRfu), chartArea.right - chartArea.left, Math.abs(yRfu - yRu));
+
+    // Zone sous RFU : de la RFU jusqu'à 0.
+    ctx.fillStyle = 'rgba(235, 146, 52, 0.11)';
+    ctx.fillRect(chartArea.left, Math.min(yRfu, yZero), chartArea.right - chartArea.left, Math.abs(yZero - yRfu));
+
+    ctx.restore();
+  }
+};
+
 function renderChart(rows) {
   const labels = rows.map(r => fmtShort(r.date));
   const firstForecast = rows.findIndex(r => r.forecast);
@@ -1236,8 +1264,8 @@ function renderChart(rows) {
     datasets: [
       { type: 'line', label: 'Stock observé', data: observed, yAxisID: 'yStock', borderColor: '#2b3137', backgroundColor: '#2b3137', borderWidth: 3, pointRadius: 1.5, tension: .25, spanGaps: false },
       { type: 'line', label: 'Stock prévisionnel', data: forecast, yAxisID: 'yStock', borderColor: '#7a8088', backgroundColor: '#7a8088', borderWidth: 3, borderDash: [7,5], pointRadius: 1.5, tension: .25, spanGaps: true },
-      { type: 'line', label: 'RU', data: rows.map(() => ru), yAxisID: 'yStock', borderColor: '#1f6f43', borderWidth: 2, borderDash: [], pointRadius: 0 },
-      { type: 'line', label: 'RFU', data: rows.map(() => rfu), yAxisID: 'yStock', borderColor: '#b24a00', borderWidth: 2, borderDash: [], pointRadius: 0 },
+      { type: 'line', label: 'RU', data: rows.map(() => ru), yAxisID: 'yStock', borderColor: '#1f6f43', backgroundColor: '#1f6f43', borderWidth: 2, borderDash: [], pointRadius: 0 },
+      { type: 'line', label: 'RFU', data: rows.map(() => rfu), yAxisID: 'yStock', borderColor: '#b24a00', backgroundColor: '#b24a00', borderWidth: 2, borderDash: [], pointRadius: 0 },
       { type: 'bar', label: 'Pluie efficace', data: rows.map(r => r.rainUsed), yAxisID: 'yFlux', backgroundColor: 'rgba(0, 88, 183, .88)', borderWidth: 0, order: 0 },
       { type: 'bar', label: 'Irrigation', data: rows.map(r => r.irrigation), yAxisID: 'yFlux', backgroundColor: 'rgba(0, 166, 81, .92)', borderWidth: 0, order: 0 }
     ]
@@ -1246,7 +1274,7 @@ function renderChart(rows) {
   const config = {
     type: 'line',
     data,
-    plugins: [todayLinePlugin],
+    plugins: [waterZonesPlugin, todayLinePlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -1254,6 +1282,15 @@ function renderChart(rows) {
       plugins: {
         legend: { position: 'bottom', labels: { usePointStyle: false, boxWidth: 28, boxHeight: 3 } },
         tooltip: {
+          backgroundColor: 'rgba(255,255,255,.97)',
+          titleColor: '#1f2328',
+          bodyColor: '#1f2328',
+          borderColor: '#d7dce2',
+          borderWidth: 1,
+          cornerRadius: 8,
+          padding: 10,
+          displayColors: true,
+          boxPadding: 4,
           callbacks: {
             afterBody(items) {
               const idx = items[0]?.dataIndex;
