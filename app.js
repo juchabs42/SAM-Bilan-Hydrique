@@ -1417,8 +1417,9 @@ function renderChart(rows) {
                 : (typeof dataset.borderColor === 'string' ? dataset.borderColor : '#666');
               return {
                 backgroundColor: color,
-                borderColor: color,
-                borderWidth: 0
+                borderColor: 'rgba(0,0,0,0)',
+                borderWidth: 0,
+                borderRadius: 0
               };
             },
             afterBody(items) {
